@@ -10,15 +10,11 @@ login_attempts = defaultdict(lambda: {"count": 0, "lock_until": 0.0, "last_attem
 
 
 def get_client_ip(request: Request) -> str:
+    # CF Tunnel 部署：只有 cf-connecting-ip 由 Cloudflare 边缘权威写入；
+    # x-real-ip / x-forwarded-for 客户端可伪造，一律不采信。
     cf_ip = request.headers.get("cf-connecting-ip")
     if cf_ip:
         return cf_ip.strip()
-    x_real_ip = request.headers.get("x-real-ip")
-    if x_real_ip:
-        return x_real_ip.strip()
-    x_forwarded_for = request.headers.get("x-forwarded-for")
-    if x_forwarded_for:
-        return x_forwarded_for.split(",")[0].strip()
     return request.client.host if request.client else "127.0.0.1"
 
 
@@ -52,9 +48,26 @@ def record_login_success(ip: str):
         del login_attempts[ip]
 
 
-def normalize_pwd(pwd: str) -> str:
+# ----------------- 微信入口节流 -----------------
+_wechat_hits = defaultdict(list)
+
+
+def check_wechat_throttle(ip: str) -> bool:
+    """每 IP 每分钟至多 WECHAT_RATE_PER_MIN 次，超限返回 False。"""
+    now = time.time()
+    window_start = now - 60
+    hits = [t for t in _wechat_hits[ip] if t > window_start]
+    if len(hits) >= config.WECHAT_RATE_PER_MIN:
+        _wechat_hits[ip] = hits
+        return False
+    hits.append(now)
+    _wechat_hits[ip] = hits
+    return True
+
+
+def normalize_pwd(pwd: str) -> tuple:
     if not pwd:
-        return ""
+        return "", "", ""
     p = pwd.strip()
     p_cn = p.replace("!", "！")
     p_en = p.replace("！", "!")

@@ -41,7 +41,7 @@
           </div>
         </div>
         <div class="bg-white rounded-xl shadow p-5 mt-4 text-sm text-gray-500">
-          当前 Token：<code>{{ stats.token || '-' }}</code>
+          当前 Token：<code>{{ stats.token_configured ? '已配置（服务端持有，不展示）' : '未配置' }}</code>
           <span class="ml-4">网站地址：</span><code>{{ stats.website || '-' }}</code>
         </div>
       </div>

@@ -1,12 +1,32 @@
 import hashlib
+import hmac
+import time
 import xml.etree.ElementTree as ET
 
 from fastapi import APIRouter, Request, Response
 
 import config
+from core.security import check_wechat_throttle, get_client_ip
 from core.wechat import build_reply_xml, decide_reply, save_message
 
 router = APIRouter()
+
+SUCCESS = Response(content="success", media_type="text/plain")
+
+
+def verify_signature(signature: str, timestamp: str, nonce: str) -> bool:
+    if not signature or not timestamp or not nonce:
+        return False
+    try:
+        ts = int(timestamp)
+    except ValueError:
+        return False
+    if abs(time.time() - ts) > config.WECHAT_TS_WINDOW:
+        return False
+    items = [config.WECHAT_TOKEN, timestamp, nonce]
+    items.sort()
+    sha1 = hashlib.sha1("".join(items).encode("utf-8")).hexdigest()
+    return hmac.compare_digest(sha1, signature)
 
 
 @router.get("/MP_verify_{token}.txt")
@@ -16,21 +36,31 @@ def mp_verify_wildcard(token: str):
 
 @router.get("/wechat")
 def verify_wechat(signature: str = "", timestamp: str = "", nonce: str = "", echostr: str = ""):
-    items = [config.WECHAT_TOKEN, timestamp, nonce]
-    items.sort()
-    sha1 = hashlib.sha1("".join(items).encode("utf-8")).hexdigest()
-    if sha1 == signature:
+    if verify_signature(signature, timestamp, nonce):
         return Response(content=echostr, media_type="text/plain")
     return Response(content="Invalid Signature", status_code=403)
 
 
 @router.post("/wechat")
-async def handle_wechat_msg(request: Request):
+async def handle_wechat_msg(
+    request: Request, signature: str = "", timestamp: str = "", nonce: str = ""
+):
+    # 先验签：失败只回 success（避免微信重试），不执行业务
+    if not verify_signature(signature, timestamp, nonce):
+        return SUCCESS
+    if not check_wechat_throttle(get_client_ip(request)):
+        return SUCCESS
+
     body = await request.body()
+    if len(body) > config.WECHAT_MAX_BODY:
+        return SUCCESS
+    head = body[:200].lower()
+    if b"<!doctype" in head or b"<!entity" in head:
+        return SUCCESS
     try:
         root = ET.fromstring(body)
     except Exception:
-        return Response(content="success", media_type="text/plain")
+        return SUCCESS
 
     msg_type = root.findtext("MsgType", "")
     from_user = root.findtext("FromUserName", "")  # 用户 OpenID
@@ -46,4 +76,4 @@ async def handle_wechat_msg(request: Request):
     if reply_content is not None:
         return Response(content=build_reply_xml(from_user, to_user, reply_content), media_type="application/xml")
 
-    return Response(content="success", media_type="text/plain")
+    return SUCCESS

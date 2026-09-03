@@ -1,4 +1,4 @@
-"""管理后台鉴权：Bearer token（主）+ 旧 ?pwd/body 密码（兼容）."""
+"""管理后台鉴权：只认 Authorization: Bearer token."""
 
 import secrets
 import time
@@ -12,7 +12,7 @@ from core.security import (
     record_login_failure,
     record_login_success,
 )
-from db.database import get_db
+from db.database import db
 
 TOKEN_TTL = 7 * 24 * 3600  # token 有效期 7 天
 
@@ -20,40 +20,37 @@ TOKEN_TTL = 7 * 24 * 3600  # token 有效期 7 天
 def issue_token() -> tuple:
     token = secrets.token_urlsafe(32)
     expires_at = time.time() + TOKEN_TTL
-    conn = get_db()
-    conn.execute(
-        "INSERT INTO admin_tokens (token, expires_at) VALUES (?, ?)",
-        (token, expires_at),
-    )
-    conn.commit()
-    conn.close()
+    with db() as conn:
+        conn.execute(
+            "INSERT INTO admin_tokens (token, expires_at) VALUES (?, ?)",
+            (token, expires_at),
+        )
+        conn.commit()
     return token, expires_at
 
 
 def verify_token(token: str) -> bool:
     if not token:
         return False
-    conn = get_db()
-    row = conn.execute(
-        "SELECT expires_at FROM admin_tokens WHERE token = ?", (token,)
-    ).fetchone()
-    if row is None:
-        conn.close()
-        return False
-    if row["expires_at"] <= time.time():
-        conn.execute("DELETE FROM admin_tokens WHERE token = ?", (token,))
-        conn.commit()
-        conn.close()
-        return False
-    conn.close()
+    with db() as conn:
+        row = conn.execute(
+            "SELECT expires_at FROM admin_tokens WHERE token = ?", (token,)
+        ).fetchone()
+        if row is None:
+            return False
+        if row["expires_at"] <= time.time():
+            conn.execute("DELETE FROM admin_tokens WHERE token = ?", (token,))
+            conn.commit()
+            return False
     return True
 
 
 def revoke_token(token: str):
-    conn = get_db()
-    conn.execute("DELETE FROM admin_tokens WHERE token = ?", (token,))
-    conn.commit()
-    conn.close()
+    if not token:
+        return
+    with db() as conn:
+        conn.execute("DELETE FROM admin_tokens WHERE token = ?", (token,))
+        conn.commit()
 
 
 def bearer_token(request: Request) -> str:
@@ -63,8 +60,8 @@ def bearer_token(request: Request) -> str:
     return ""
 
 
-def require_admin(request: Request, pwd: str = ""):
-    """管理接口鉴权：Bearer token 优先，旧 pwd 参数兼容。"""
+def require_admin(request: Request):
+    """管理接口鉴权：只认 Authorization: Bearer token。"""
     ip = get_client_ip(request)
     check_rate_limit(ip)
 
@@ -72,9 +69,5 @@ def require_admin(request: Request, pwd: str = ""):
         record_login_success(ip)
         return
 
-    if pwd and is_valid_pwd(pwd):
-        record_login_success(ip)
-        return
-
     record_login_failure(ip)
-    raise HTTPException(status_code=401, detail="密码错误")
+    raise HTTPException(status_code=401, detail="未登录或登录已过期")
