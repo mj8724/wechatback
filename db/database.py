@@ -44,6 +44,13 @@ def init_db():
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_code_status ON codes(status)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_openid ON users(openid)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_msg_openid ON messages(openid)")
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS admin_tokens (
+        token TEXT PRIMARY KEY,
+        expires_at REAL NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
 
     cursor.execute("SELECT COUNT(*) as cnt FROM codes")
     if cursor.fetchone()["cnt"] == 0:

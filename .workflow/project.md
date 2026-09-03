@@ -20,6 +20,8 @@
 - [x] `GET /api/stats`、`POST /api/import` 发码统计与批量导入
 - [x] SQLite 持久化（codes/status/assigned_openid + users + messages）
 - [x] Docker 部署（1Panel）+ CF Tunnel 公网接入 https://wx.liubaitech.cn
+- [x] 独立登录页 + Token 鉴权（`POST /api/login` 签发 7 天 token，Bearer 主用、旧 `pwd` 参数兼容，限流复用）
+- [x] Vue 3 + Vite + Tailwind 前端（Login/Dashboard 双视图，`frontend/dist` 由 FastAPI 托管，无 dist 回退旧页）
 
 ### Active
 

@@ -4,27 +4,49 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 import config
+from core.auth import bearer_token, issue_token, require_admin, revoke_token
 from core.security import check_rate_limit, get_client_ip, is_valid_pwd, record_login_failure, record_login_success
 from db.database import get_db
 
 router = APIRouter()
 
 
-class ImportRequest(BaseModel):
+class LoginRequest(BaseModel):
     pwd: str
-    codes: List[str]
+
+
+class ImportRequest(BaseModel):
+    pwd: str = ""
+    codes: List[str] = []
+
+
+@router.post("/api/login")
+def login(req: LoginRequest, request: Request):
+    ip = get_client_ip(request)
+    check_rate_limit(ip)
+    if not is_valid_pwd(req.pwd):
+        record_login_failure(ip)
+        raise HTTPException(status_code=401, detail="密码错误")
+    record_login_success(ip)
+    token, expires_at = issue_token()
+    return {"status": "success", "token": token, "expires_at": expires_at}
+
+
+@router.post("/api/logout")
+def logout(request: Request):
+    revoke_token(bearer_token(request))
+    return {"status": "success"}
+
+
+@router.get("/api/me")
+def me(request: Request):
+    require_admin(request)
+    return {"status": "success"}
 
 
 @router.get("/api/stats")
 def get_stats(request: Request, pwd: str = ""):
-    ip = get_client_ip(request)
-    check_rate_limit(ip)
-
-    if not is_valid_pwd(pwd):
-        record_login_failure(ip)
-        raise HTTPException(status_code=401, detail="密码错误")
-
-    record_login_success(ip)
+    require_admin(request, pwd)
 
     conn = get_db()
     cursor = conn.cursor()
@@ -61,12 +83,7 @@ def get_stats(request: Request, pwd: str = ""):
 
 @router.post("/api/import")
 def import_codes(req: ImportRequest, request: Request):
-    ip = get_client_ip(request)
-    check_rate_limit(ip)
-    if not is_valid_pwd(req.pwd):
-        record_login_failure(ip)
-        raise HTTPException(status_code=401, detail="密码错误")
-    record_login_success(ip)
+    require_admin(request, req.pwd)
 
     added = 0
     conn = get_db()

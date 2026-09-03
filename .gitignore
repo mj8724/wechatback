@@ -10,3 +10,5 @@ nohup.out
 .venv/
 venv/
 .worktrees/
+frontend/dist/
+frontend/node_modules/
