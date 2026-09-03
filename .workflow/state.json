@@ -1,0 +1,33 @@
+{
+  "_milestone_schema": "{ id, name, type: 'standard'|'adhoc', status, phases[], phase_slugs{}, roadmap_ref, created_at }",
+  "accumulated_context": {
+    "blockers": [],
+    "deferred": [],
+    "key_decisions": []
+  },
+  "artifacts": [],
+  "current_milestone": null,
+  "current_task_id": null,
+  "last_updated": "2026-09-03T00:00:00Z",
+  "milestone_history": [],
+  "milestones": [],
+  "project_name": "wechatback",
+  "status": "idle",
+  "version": "3.1",
+  "sessions": [
+    {
+      "session_id": "20260903-monolith-split",
+      "intent": "拆分app.py单体为分层模块并锁定行为一致",
+      "depends_on": [],
+      "scope": {
+        "requirements": [
+          "REQ-拆分单体文件",
+          "REQ-清理Flask残留",
+          "REQ-线上行为不变"
+        ]
+      },
+      "status": "completed",
+      "roadmap_ref": ".workflow/roadmap.md"
+    }
+  ]
+}

@@ -1,0 +1,548 @@
+import os
+import time
+import hashlib
+import sqlite3
+import xml.etree.ElementTree as ET
+from collections import defaultdict
+from fastapi import FastAPI, Request, Response, HTTPException
+from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel
+from typing import List, Optional
+
+app = FastAPI(title="WeChat Redeem Hub")
+
+DB_PATH = os.environ.get("DB_PATH", "/data/wechat_redeem.db")
+WECHAT_TOKEN = os.environ.get("WECHAT_TOKEN", "REDACTED-WECHAT-TOKEN")
+# 支持密码：REDACTED-PASSWORD 或 REDACTED-PASSWORD
+ADMIN_PASSWORDS = {"REDACTED-PASSWORD", "REDACTED-PASSWORD", os.environ.get("ADMIN_PASSWORD", "REDACTED-PASSWORD")}
+WEBSITE_URL = os.environ.get("WEBSITE_URL", "https://newapi.liubaitech.cn")
+GROUP_WECHAT_ID = "810466205"  # 微信群：添加此微信号
+
+# ----------------- 防暴力破解机制 (Anti-Brute-Force) -----------------
+login_attempts = defaultdict(lambda: {"count": 0, "lock_until": 0.0, "last_attempt": 0.0})
+MAX_FAILED_ATTEMPTS = 5
+LOCKOUT_DURATION = 15 * 60
+
+def get_client_ip(request: Request) -> str:
+    cf_ip = request.headers.get("cf-connecting-ip")
+    if cf_ip:
+        return cf_ip.strip()
+    x_real_ip = request.headers.get("x-real-ip")
+    if x_real_ip:
+        return x_real_ip.strip()
+    x_forwarded_for = request.headers.get("x-forwarded-for")
+    if x_forwarded_for:
+        return x_forwarded_for.split(",")[0].strip()
+    return request.client.host if request.client else "127.0.0.1"
+
+def check_rate_limit(ip: str):
+    now = time.time()
+    info = login_attempts[ip]
+    if info["lock_until"] > now:
+        remaining = int(info["lock_until"] - now)
+        raise HTTPException(
+            status_code=429,
+            detail=f"密码错误次数过多，您的IP已被临时锁定。请在 {remaining} 秒后重试。"
+        )
+
+def record_login_failure(ip: str):
+    now = time.time()
+    info = login_attempts[ip]
+    info["count"] += 1
+    info["last_attempt"] = now
+    if info["count"] >= MAX_FAILED_ATTEMPTS:
+        info["lock_until"] = now + LOCKOUT_DURATION
+        remaining = int(info["lock_until"] - now)
+        raise HTTPException(
+            status_code=429,
+            detail=f"连续输错密码达到上限，您的IP已被锁定15分钟。请在 {remaining} 秒后重试。"
+        )
+
+def record_login_success(ip: str):
+    if ip in login_attempts:
+        del login_attempts[ip]
+
+# ----------------- 数据库初始化 -----------------
+def get_db():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS codes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        code TEXT UNIQUE NOT NULL,
+        status TEXT DEFAULT 'unused',
+        assigned_openid TEXT,
+        assigned_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        openid TEXT UNIQUE NOT NULL,
+        code TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS messages (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        openid TEXT NOT NULL,
+        msg_type TEXT DEFAULT 'text',
+        content TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_code_status ON codes(status)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_user_openid ON users(openid)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_msg_openid ON messages(openid)")
+
+    cursor.execute("SELECT COUNT(*) as cnt FROM codes")
+    if cursor.fetchone()["cnt"] == 0:
+        default_codes = [
+            "482e7b835f764ed68761a63e511e85f2",
+            "1d1ecfd5917b40ffbbadcc11dc66e855",
+            "84fa282d8c37466ebc24cba43867ffc0",
+            "206dcfec337346dcbf0a6538cbfa001c",
+            "7068579cf021469ba43b18507ee500f4",
+            "4a40643ea3cb4a05a965706536b3f71c",
+            "3d4eb896b054452aa8e678396e95bf06",
+            "9fc1f919a787408c8955b5de3ab7435a",
+            "8d892789d5e649a7ac9906c6ba6d96c7",
+            "9c1909fea9084bf2a4df7f123bd1152b"
+        ]
+        for c in default_codes:
+            try:
+                cursor.execute("INSERT OR IGNORE INTO codes (code, status) VALUES (?, 'unused')", (c,))
+            except Exception:
+                pass
+    conn.commit()
+    conn.close()
+
+init_db()
+
+# ----------------- 留言持久化 -----------------
+def save_message(openid: str, msg_type: str, content: str):
+    try:
+        conn = get_db()
+        conn.execute("INSERT INTO messages (openid, msg_type, content) VALUES (?, ?, ?)", (openid, msg_type, content))
+        conn.commit()
+        conn.close()
+    except Exception:
+        pass
+
+# ----------------- 微信域名所有权校验 & 消息接入 -----------------
+@app.get("/MP_verify_{token}.txt")
+def mp_verify_wildcard(token: str):
+    return Response(content=token, media_type="text/plain")
+
+@app.get("/wechat")
+def verify_wechat(signature: str = "", timestamp: str = "", nonce: str = "", echostr: str = ""):
+    items = [WECHAT_TOKEN, timestamp, nonce]
+    items.sort()
+    sha1 = hashlib.sha1("".join(items).encode("utf-8")).hexdigest()
+    if sha1 == signature:
+        return Response(content=echostr, media_type="text/plain")
+    return Response(content="Invalid Signature", status_code=403)
+
+@app.post("/wechat")
+async def handle_wechat_msg(request: Request):
+    body = await request.body()
+    try:
+        root = ET.fromstring(body)
+    except Exception:
+        return Response(content="success", media_type="text/plain")
+
+    msg_type = root.findtext("MsgType", "")
+    from_user = root.findtext("FromUserName", "")  # 用户 OpenID
+    to_user = root.findtext("ToUserName", "")      # 公众号原始ID
+    event = root.findtext("Event", "").lower()
+    content = root.findtext("Content", "") or ""
+
+    # 所有消息一律先持久化记录
+    save_message(from_user, msg_type, content or f"[{event}]" if msg_type == "event" else content)
+
+    reply_content = None
+    if msg_type == "event" and event in ["subscribe", "scan"]:
+        reply_content = (
+            f"🎉 欢迎关注！\n\n"
+            f"发送【激活码】，即可获取您的专属激活码（每个用户限领一次）\n\n"
+            f"发送【微信群】，即可获取微信群入口，一起交流！"
+        )
+    elif msg_type == "text":
+        t = content.strip().lower()
+        if "激活码" in t or "激活" in t or "兑换码" in t:
+            reply_content = get_or_assign_code(from_user)
+        elif "微信群" in t or "加群" in t or ("群" in t and "激活" not in t):
+            reply_content = (
+                f"📱 请添加我的微信号：{GROUP_WECHAT_ID}\n\n"
+                f"添加时备注【进群】，我会拉您进入微信群，一起交流！"
+            )
+        else:
+            reply_content = (
+                f"👋 收到您的留言！\n\n"
+                f"• 发送【激活码】→ 获取专属激活码\n"
+                f"• 发送【微信群】→ 获取微信群入口\n"
+                f"• 每个用户限领一次激活码"
+            )
+
+    if reply_content is not None:
+        reply_xml = f"""<xml>
+<ToUserName><![CDATA[{from_user}]]></ToUserName>
+<FromUserName><![CDATA[{to_user}]]></FromUserName>
+<CreateTime>{int(time.time())}</CreateTime>
+<MsgType><![CDATA[text]]></MsgType>
+<Content><![CDATA[{reply_content}]]></Content>
+</xml>"""
+        return Response(content=reply_xml, media_type="application/xml")
+
+    return Response(content="success", media_type="text/plain")
+
+def get_or_assign_code(openid: str) -> str:
+    if not openid:
+        return "无法获取您的用户信息，请稍后重试。"
+
+    conn = get_db()
+    cursor = conn.cursor()
+
+    cursor.execute("SELECT code FROM users WHERE openid = ?", (openid,))
+    row = cursor.fetchone()
+    if row:
+        code = row["code"]
+        conn.close()
+        return (
+            f"您之前已成功领取过专属激活码：\n\n"
+            f"【{code}】\n\n"
+            f"👉 兑换地址：{WEBSITE_URL}\n"
+            f"每个用户限领一次，已领取的激活码可随时在上方平台完成兑换！"
+        )
+
+    cursor.execute("SELECT id, code FROM codes WHERE status = 'unused' ORDER BY id ASC LIMIT 1")
+    code_row = cursor.fetchone()
+    if not code_row:
+        conn.close()
+        return f"抱歉，当前激活码已被领完，请稍后再试或联系管理员！\n平台地址：{WEBSITE_URL}"
+
+    code_id = code_row["id"]
+    code_val = code_row["code"]
+    now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+
+    try:
+        cursor.execute("BEGIN IMMEDIATE")
+        cursor.execute(
+            "UPDATE codes SET status = 'assigned', assigned_openid = ?, assigned_at = ? WHERE id = ? AND status = 'unused'",
+            (openid, now_str, code_id)
+        )
+        if cursor.rowcount == 0:
+            conn.rollback()
+            conn.close()
+            return get_or_assign_code(openid)
+
+        cursor.execute("INSERT INTO users (openid, code) VALUES (?, ?)", (openid, code_val))
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        conn.close()
+        return "系统繁忙，请稍后再试！"
+
+    conn.close()
+    return (
+        f"🎉 您的专属激活码为：\n\n"
+        f"【{code_val}】\n\n"
+        f"👉 兑换地址：{WEBSITE_URL}\n\n"
+        f"每个用户限领一次，请前往上方兑换地址完成充值兑换！"
+    )
+
+# ----------------- 管理后台 API (带防暴力破解) -----------------
+def normalize_pwd(pwd: str) -> str:
+    if not pwd:
+        return ""
+    p = pwd.strip()
+    p_cn = p.replace("!", "！")
+    p_en = p.replace("！", "!")
+    return p, p_cn, p_en
+
+def is_valid_pwd(pwd: str) -> bool:
+    if not pwd:
+        return False
+    p, p_cn, p_en = normalize_pwd(pwd)
+    for check in [p, p_cn, p_en]:
+        if check in ADMIN_PASSWORDS:
+            return True
+    return False
+
+class ImportRequest(BaseModel):
+    pwd: str
+    codes: List[str]
+
+@app.get("/api/stats")
+def get_stats(request: Request, pwd: str = ""):
+    ip = get_client_ip(request)
+    check_rate_limit(ip)
+
+    if not is_valid_pwd(pwd):
+        record_login_failure(ip)
+        raise HTTPException(status_code=401, detail="密码错误")
+
+    record_login_success(ip)
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) as total FROM codes")
+    total = cursor.fetchone()["total"]
+    cursor.execute("SELECT COUNT(*) as used FROM codes WHERE status = 'assigned'")
+    used = cursor.fetchone()["used"]
+    cursor.execute("SELECT COUNT(*) as unused FROM codes WHERE status = 'unused'")
+    unused = cursor.fetchone()["unused"]
+    cursor.execute("SELECT COUNT(*) as users_count FROM users")
+    users_count = cursor.fetchone()["users_count"]
+    cursor.execute("SELECT COUNT(*) as messages_count FROM messages")
+    messages_count = cursor.fetchone()["messages_count"]
+
+    cursor.execute("SELECT * FROM messages ORDER BY id DESC LIMIT 100")
+    messages = [dict(r) for r in cursor.fetchall()]
+
+    cursor.execute("SELECT id, code, status, assigned_openid, assigned_at, created_at FROM codes ORDER BY id DESC LIMIT 500")
+    records = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+
+    return {
+        "total": total,
+        "used": used,
+        "unused": unused,
+        "users_count": users_count,
+        "messages_count": messages_count,
+        "messages": messages,
+        "records": records,
+        "token": WECHAT_TOKEN,
+        "website": WEBSITE_URL
+    }
+
+@app.post("/api/import")
+def import_codes(req: ImportRequest, request: Request):
+    ip = get_client_ip(request)
+    check_rate_limit(ip)
+    if not is_valid_pwd(req.pwd):
+        record_login_failure(ip)
+        raise HTTPException(status_code=401, detail="密码错误")
+    record_login_success(ip)
+
+    added = 0
+    conn = get_db()
+    cursor = conn.cursor()
+    for code in req.codes:
+        c = code.strip()
+        if not c:
+            continue
+        try:
+            cursor.execute("INSERT OR IGNORE INTO codes (code, status) VALUES (?, 'unused')", (c,))
+            if cursor.rowcount > 0:
+                added += 1
+        except Exception:
+            pass
+    conn.commit()
+    conn.close()
+    return {"status": "success", "added": added}
+
+# ----------------- 管理后台 HTML 页面 -----------------
+@app.get("/", response_class=HTMLResponse)
+@app.get("/admin", response_class=HTMLResponse)
+def admin_page():
+    return """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>微信公众号兑换码管理控制台</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { background-color: #f4f6f9; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    .card { border-radius: 12px; border: none; box-shadow: 0 4px 12px rgba(0,0,0,0.05); }
+    .stat-card { transition: transform 0.2s; }
+    .stat-card:hover { transform: translateY(-3px); }
+    .stat-num { font-size: 2rem; font-weight: 700; }
+    .badge-unused { background-color: #28a745; color: white; }
+    .badge-assigned { background-color: #6c757d; color: white; }
+    .table-container { max-height: 500px; overflow-y: auto; }
+    .brand-header { background: linear-gradient(135deg, #07c160 0%, #009688 100%); color: white; padding: 24px 0; margin-bottom: 30px; }
+  </style>
+</head>
+<body>
+  <div class="brand-header text-center">
+    <h2>💬 微信公众号激活码分发后台</h2>
+    <p class="mb-0 text-white-50">一客一码防刷发放 · 实时库存监控 · 粉丝留言持久化记录</p>
+  </div>
+
+  <div class="container pb-5">
+    <div class="card p-4 mb-4" id="loginCard">
+      <div class="row align-items-center">
+        <div class="col-md-8">
+          <label class="form-label fw-bold">管理员访问密码</label>
+          <input type="password" id="adminPwd" class="form-control form-control-lg" placeholder="请输入管理员密码查看数据..." onkeydown="if(event.key==='Enter') loadData()">
+          <small class="text-muted">🔒 已启用防暴力破解机制：密码连续输错5次将自动锁定IP 15分钟</small>
+        </div>
+        <div class="col-md-4 mt-3 mt-md-0 d-grid">
+          <button class="btn btn-success btn-lg" onclick="loadData()">解锁 / 刷新控制台</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="mainDashboard" style="display:none;">
+      <div class="row g-3 mb-4">
+        <div class="col-md-3">
+          <div class="card stat-card p-3 bg-white text-dark">
+            <div class="text-muted">总激活码数</div>
+            <div class="stat-num text-primary" id="statTotal">0</div>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <div class="card stat-card p-3 bg-white text-dark">
+            <div class="text-muted">已领取</div>
+            <div class="stat-num text-success" id="statUsed">0</div>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <div class="card stat-card p-3 bg-white text-dark">
+            <div class="text-muted">待领取</div>
+            <div class="stat-num text-warning" id="statUnused">0</div>
+          </div>
+        </div>
+        <div class="col-md-3">
+          <div class="card stat-card p-3 bg-white text-dark">
+            <div class="text-muted">已服务用户</div>
+            <div class="stat-num text-danger" id="statUsers">0</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card p-4 mb-4">
+        <h5 class="mb-3">📥 批量导入激活码</h5>
+        <div class="row g-2">
+          <div class="col-md-10">
+            <textarea id="importText" class="form-control" rows="3" placeholder="每行一个激活码，粘贴到这里..."></textarea>
+          </div>
+          <div class="col-md-2 d-grid">
+            <button class="btn btn-info text-white" onclick="importCodes()">导入</button>
+          </div>
+        </div>
+        <div class="mt-3">
+          <span class="text-muted">当前 Token：</span><code id="tokenShow">-</code>
+          <span class="text-muted ms-3">网站地址：</span><code id="siteUrlShow">-</code>
+        </div>
+      </div>
+
+      <div class="card p-4 mb-4">
+        <h5 class="mb-0">📝 粉丝留言 <span class="badge bg-secondary" id="msgCount">0</span></h5>
+        <p class="text-muted small mb-3">所有粉丝发送内容均持久化记录于此，刷新即可查看最新留言</p>
+        <div class="table-container">
+          <table class="table table-sm table-hover">
+            <thead><tr><th>#</th><th>OpenID</th><th>内容</th><th>时间</th></tr></thead>
+            <tbody id="messagesBody"><tr><td colspan="4" class="text-center text-muted py-4">正在加载...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="card p-4">
+        <h5 class="mb-3">🔑 激活码库存明细</h5>
+        <div class="table-container">
+          <table class="table table-sm table-hover">
+            <thead>
+              <tr><th>#</th><th>激活码</th><th>状态</th><th>领取人OpenID</th><th>领取时间</th></tr>
+            </thead>
+            <tbody id="codesTableBody"><tr><td colspan="5" class="text-center text-muted py-4">正在加载...</td></tr></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const savedPwd = localStorage.getItem('wechat_admin_pwd');
+    if (savedPwd) {
+      document.getElementById('adminPwd').value = savedPwd;
+    }
+
+    async function loadData() {
+      const pwd = document.getElementById('adminPwd').value.trim();
+      if (!pwd) { alert('请输入管理员密码！'); return; }
+      try {
+        const res = await fetch(`/api/stats?pwd=${encodeURIComponent(pwd)}`);
+        if (res.status === 429) { const err = await res.json(); alert('🚫 ' + err.detail); return; }
+        if (!res.ok) { alert('密码错误或无权限访问！'); return; }
+        const data = await res.json();
+        localStorage.setItem('wechat_admin_pwd', pwd);
+
+        document.getElementById('mainDashboard').style.display = 'block';
+        document.getElementById('statTotal').innerText = data.total;
+        document.getElementById('statUsed').innerText = data.used;
+        document.getElementById('statUnused').innerText = data.unused;
+        document.getElementById('statUsers').innerText = data.users_count;
+        document.getElementById('tokenShow').innerText = data.token;
+        if(data.website) document.getElementById('siteUrlShow').innerText = data.website;
+        document.getElementById('msgCount').innerText = data.messages_count || 0;
+
+        const mBody = document.getElementById('messagesBody');
+        mBody.innerHTML = '';
+        if (!data.messages || data.messages.length === 0) {
+          mBody.innerHTML = '<tr><td colspan="4" class="text-center text-muted py-4">暂无留言记录</td></tr>';
+        } else {
+          data.messages.forEach(m => {
+            const tr = document.createElement('tr');
+            tr.innerHTML = `<td>${m.id}</td><td><small><code>${m.openid||''}</code></small></td><td>${(m.content||'').replace(/</g,'&lt;')}</td><td><small class="text-muted">${m.created_at||''}</small></td>`;
+            mBody.appendChild(tr);
+          });
+        }
+
+        const tbody = document.getElementById('codesTableBody');
+        tbody.innerHTML = '';
+        if (data.records.length === 0) {
+          tbody.innerHTML = '<tr><td colspan="5" class="text-center text-muted py-4">暂无激活码数据</td></tr>';
+          return;
+        }
+        data.records.forEach((r) => {
+          const isUsed = r.status === 'assigned';
+          const badge = isUsed ? '<span class="badge badge-assigned">已领取</span>' : '<span class="badge badge-unused">待领取</span>';
+          const openid = r.assigned_openid || '<span class="text-muted">-</span>';
+          const time = r.assigned_at || '<span class="text-muted">-</span>';
+          const tr = document.createElement('tr');
+          tr.innerHTML = `<td>${r.id}</td><td><code>${r.code}</code></td><td>${badge}</td><td><small>${openid}</small></td><td><small class="text-muted">${time}</small></td>`;
+          tbody.appendChild(tr);
+        });
+      } catch (err) {
+        alert('请求失败: ' + err.message);
+      }
+    }
+
+    async function importCodes() {
+      const pwd = document.getElementById('adminPwd').value.trim();
+      const text = document.getElementById('importText').value.trim();
+      if (!text) { alert('请先在文本框粘贴要导入的激活码！'); return; }
+      const lines = text.split('\\n').map(s => s.trim()).filter(Boolean);
+      if (lines.length === 0) return;
+      try {
+        const res = await fetch('/api/import', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ pwd, codes: lines })
+        });
+        if (res.status === 429) { const err = await res.json(); alert('🚫 ' + err.detail); return; }
+        const json = await res.json();
+        alert(`成功导入 ${json.added} 个新激活码！`);
+        document.getElementById('importText').value = '';
+        loadData();
+      } catch (err) {
+        alert('导入失败: ' + err.message);
+      }
+    }
+
+    window.onload = loadData;
+  </script>
+</body>
+</html>
+"""
