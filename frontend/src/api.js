@@ -62,3 +62,14 @@ export async function importCodes(codes) {
   if (!res.ok) throw { status: res.status, detail: '导入失败' }
   return res.json()
 }
+
+export async function resetCode(code) {
+  const res = await req('/api/codes/reset', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (res.status === 429) throw { status: 429, detail: data.detail }
+  if (!res.ok) throw { status: res.status, detail: data.detail || '重置失败' }
+  return data
+}

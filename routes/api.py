@@ -20,6 +20,11 @@ class ImportRequest(BaseModel):
     codes: List[str] = []
 
 
+class ResetRequest(BaseModel):
+    pwd: str = ""
+    code: str = ""
+
+
 @router.post("/api/login")
 def login(req: LoginRequest, request: Request):
     ip = get_client_ip(request)
@@ -86,18 +91,54 @@ def import_codes(req: ImportRequest, request: Request):
     require_admin(request, req.pwd)
 
     added = 0
+    duplicates = []
+    seen = set()
     conn = get_db()
     cursor = conn.cursor()
     for code in req.codes:
         c = code.strip()
-        if not c:
+        if not c or c in seen:
+            if c:
+                duplicates.append(c)
+            continue
+        seen.add(c)
+        cursor.execute("SELECT id FROM codes WHERE code = ?", (c,))
+        if cursor.fetchone():
+            duplicates.append(c)
             continue
         try:
-            cursor.execute("INSERT OR IGNORE INTO codes (code, status) VALUES (?, 'unused')", (c,))
-            if cursor.rowcount > 0:
-                added += 1
+            cursor.execute("INSERT INTO codes (code, status) VALUES (?, 'unused')", (c,))
+            added += 1
         except Exception:
-            pass
+            duplicates.append(c)
     conn.commit()
     conn.close()
-    return {"status": "success", "added": added}
+    return {"status": "success", "added": added, "duplicates": duplicates, "total": added + len(duplicates)}
+
+
+@router.post("/api/codes/reset")
+def reset_code(req: ResetRequest, request: Request):
+    require_admin(request, req.pwd)
+    code = (req.code or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="激活码不能为空")
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT status FROM codes WHERE code = ?", (code,))
+    row = cursor.fetchone()
+    if row is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail="激活码不存在")
+    if row["status"] != "assigned":
+        conn.close()
+        return {"status": "success", "reset": False, "message": "该激活码未被领取，无需重置"}
+
+    cursor.execute(
+        "UPDATE codes SET status = 'unused', assigned_openid = NULL, assigned_at = NULL WHERE code = ?",
+        (code,)
+    )
+    cursor.execute("DELETE FROM users WHERE code = ?", (code,))
+    conn.commit()
+    conn.close()
+    return {"status": "success", "reset": True, "message": "已重置为待领取，原领取人可重新领取"}

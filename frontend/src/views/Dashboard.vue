@@ -57,6 +57,14 @@
               导入
             </button>
           </div>
+          <div v-if="importResult" class="mt-3 text-sm">
+            <p class="p-2 rounded bg-emerald-50 text-emerald-700">
+              ✅ 成功导入 {{ importResult.added }} 个<span v-if="importResult.duplicates?.length">，{{ importResult.duplicates.length }} 个重复已剔除</span>
+            </p>
+            <p v-if="importResult.duplicates?.length" class="mt-1 p-2 rounded bg-amber-50 text-amber-700 break-all">
+              重复码：{{ importResult.duplicates.join('、') }}
+            </p>
+          </div>
         </div>
 
         <div class="bg-white rounded-xl shadow p-5 mt-4">
@@ -65,9 +73,9 @@
           </h5>
           <div class="max-h-[500px] overflow-y-auto">
             <table class="w-full text-sm">
-              <thead><tr class="text-left text-gray-500"><th class="py-1">#</th><th>激活码</th><th>状态</th><th>领取人</th><th>领取时间</th></tr></thead>
+              <thead><tr class="text-left text-gray-500"><th class="py-1">#</th><th>激活码</th><th>状态</th><th>领取人</th><th>领取时间</th><th>操作</th></tr></thead>
               <tbody>
-                <tr v-if="!stats.records?.length"><td colspan="5" class="text-center text-gray-400 py-6">暂无激活码数据</td></tr>
+                <tr v-if="!stats.records?.length"><td colspan="6" class="text-center text-gray-400 py-6">暂无激活码数据</td></tr>
                 <tr v-for="r in stats.records" :key="r.id" class="border-t hover:bg-gray-50">
                   <td class="py-1">{{ r.id }}</td>
                   <td><code>{{ r.code }}</code></td>
@@ -77,6 +85,11 @@
                   </td>
                   <td><small>{{ r.assigned_openid || '-' }}</small></td>
                   <td><small class="text-gray-500">{{ r.assigned_at || '-' }}</small></td>
+                  <td>
+                    <button v-if="r.status === 'assigned'" @click="onReset(r.code)"
+                      class="text-xs px-2 py-1 rounded bg-amber-100 text-amber-700 hover:bg-amber-200">重置</button>
+                    <span v-else class="text-gray-300 text-xs">-</span>
+                  </td>
                 </tr>
               </tbody>
             </table>
@@ -112,11 +125,12 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { clearToken, fetchStats, importCodes, logout } from '../api.js'
+import { clearToken, fetchStats, importCodes, logout, resetCode } from '../api.js'
 
 const router = useRouter()
 const stats = ref({})
 const importText = ref('')
+const importResult = ref(null)
 const error = ref('')
 const active = ref('overview')
 
@@ -147,11 +161,22 @@ async function onImport() {
   if (!lines.length) return
   try {
     const data = await importCodes(lines)
-    alert(`成功导入 ${data.added} 个新激活码！`)
+    importResult.value = data
     importText.value = ''
     await load()
   } catch (e) {
     alert('导入失败：' + (e.detail || '未知错误'))
+  }
+}
+
+async function onReset(code) {
+  if (!confirm(`确定将激活码 ${code} 重置为待领取吗？原领取人可重新领取。`)) return
+  try {
+    const data = await resetCode(code)
+    alert(data.message || '重置成功')
+    await load()
+  } catch (e) {
+    alert('重置失败：' + (e.detail || '未知错误'))
   }
 }
 
