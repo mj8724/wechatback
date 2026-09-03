@@ -73,3 +73,25 @@ export async function resetCode(code) {
   if (!res.ok) throw { status: res.status, detail: data.detail || '重置失败' }
   return data
 }
+
+export async function deleteCode(code) {
+  const res = await req('/api/codes/delete', {
+    method: 'POST',
+    body: JSON.stringify({ code }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (res.status === 429) throw { status: 429, detail: data.detail }
+  if (!res.ok) throw { status: res.status, detail: data.detail || '删除失败' }
+  return data
+}
+
+export function downloadCSV(filename, headers, rows) {
+  const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
+  const csv = '\ufeff' + [headers, ...rows].map((r) => r.map(esc).join(',')).join('\n')
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+  const a = document.createElement('a')
+  a.href = URL.createObjectURL(blob)
+  a.download = filename
+  a.click()
+  URL.revokeObjectURL(a.href)
+}

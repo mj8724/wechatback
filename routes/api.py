@@ -25,6 +25,11 @@ class ResetRequest(BaseModel):
     code: str = ""
 
 
+class DeleteRequest(BaseModel):
+    pwd: str = ""
+    code: str = ""
+
+
 @router.post("/api/login")
 def login(req: LoginRequest, request: Request):
     ip = get_client_ip(request)
@@ -142,3 +147,26 @@ def reset_code(req: ResetRequest, request: Request):
     conn.commit()
     conn.close()
     return {"status": "success", "reset": True, "message": "已重置为待领取，原领取人可重新领取"}
+
+
+@router.post("/api/codes/delete")
+def delete_code(req: DeleteRequest, request: Request):
+    require_admin(request, req.pwd)
+    code = (req.code or "").strip()
+    if not code:
+        raise HTTPException(status_code=400, detail="激活码不能为空")
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT status FROM codes WHERE code = ?", (code,))
+    row = cursor.fetchone()
+    if row is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail="激活码不存在")
+
+    was_assigned = row["status"] == "assigned"
+    cursor.execute("DELETE FROM codes WHERE code = ?", (code,))
+    cursor.execute("DELETE FROM users WHERE code = ?", (code,))
+    conn.commit()
+    conn.close()
+    return {"status": "success", "message": "已删除" + ("（原领取人绑定已解除）" if was_assigned else "" )}
