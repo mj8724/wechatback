@@ -1,0 +1,15 @@
+version: '3.8'
+services:
+  wechat-redeem:
+    build: .
+    container_name: wechat-redeem
+    restart: always
+    ports:
+      - "8000:8000"
+    volumes:
+      - /opt/wechat-redeem/data:/data
+    environment:
+      - DB_PATH=/data/wechat_redeem.db
+      - WECHAT_TOKEN=REDACTED-WECHAT-TOKEN
+      - ADMIN_PASSWORD=REDACTED-PASSWORD
+      - WEBSITE_URL=https://newapi.liubaitech.cn

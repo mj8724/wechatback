@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+*.db
+*.db-journal
+data/
+.env
+.DS_Store
+nohup.out
+*.log
+.venv/
+venv/
+.worktrees/
