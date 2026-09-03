@@ -61,20 +61,6 @@ def _claim_code(conn, openid: str):
         return None, "error"
 
 
-def get_or_assign_code(openid: str) -> str:
-    """兼容入口：按默认新码模板发码（规则引擎内部使用 render_code_reply）。"""
-    if not openid:
-        return "无法获取您的用户信息，请稍后重试。"
-    code_val, kind = assign_code(openid)
-    if kind == "retry" or kind == "error":
-        return "系统繁忙，请稍后再试！"
-    if kind == "empty":
-        return get_setting("empty_reply")
-    if kind == "existing":
-        return render(get_setting("repeat_reply"), code_val)
-    return render(get_setting("new_reply"), code_val)
-
-
 def decide_reply(msg_type: str, event: str, content: str, from_user: str) -> Optional[str]:
     if msg_type == "event" and event in ["subscribe", "scan"]:
         return get_setting("welcome_reply")
@@ -99,14 +85,14 @@ def render_code_reply(template: str, openid: str) -> str:
     if kind == "empty":
         return get_setting("empty_reply")
     if kind == "existing":
-        return render(get_setting("repeat_reply"), code_val)
-    if kind == "error":
+        return render(template, code_val)
+    if kind in ("retry", "error"):
         return "系统繁忙，请稍后再试！"
     return render(template, code_val)
 
 
 def assign_code(openid: str):
-    """发码并返回 (code, kind)，kind ∈ new/existing/empty/error。"""
+    """发码并返回 (code, kind)，kind ∈ new/existing/empty/retry/error。"""
     if not openid:
         return None, "error"
     code_val, kind = None, "retry"
@@ -119,10 +105,11 @@ def assign_code(openid: str):
 
 
 def build_reply_xml(from_user: str, to_user: str, reply_content: str) -> str:
+    safe = (reply_content or "").replace("]]>", "]]]]><![CDATA[>")
     return f"""<xml>
 <ToUserName><![CDATA[{from_user}]]></ToUserName>
 <FromUserName><![CDATA[{to_user}]]></FromUserName>
 <CreateTime>{int(time.time())}</CreateTime>
 <MsgType><![CDATA[text]]></MsgType>
-<Content><![CDATA[{reply_content}]]></Content>
+<Content><![CDATA[{safe}]]></Content>
 </xml>"""

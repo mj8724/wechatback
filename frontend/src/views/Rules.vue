@@ -82,8 +82,7 @@ const form = ref({ id: null, keyword: '', mode: 'contains', action: 'none', cont
 const textSettings = [
   { key: 'welcome_reply', label: '关注欢迎语（subscribe/scan 事件）' },
   { key: 'fallback_reply', label: '默认回复（无关键词命中）' },
-  { key: 'new_reply', label: '发码成功模板（{code} {site}）' },
-  { key: 'repeat_reply', label: '重复领取模板（{code} {site}）' },
+  { key: 'new_reply', label: '发码成功模板（{code} {site}，含重复领取）' },
   { key: 'empty_reply', label: '库存领完模板' },
 ]
 

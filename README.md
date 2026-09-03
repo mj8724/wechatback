@@ -32,6 +32,8 @@ uvicorn app:app --host 0.0.0.0 --port 8000
 | `GROUP_WECHAT_ID` | 群入口微信号（可在后台设置里改） |
 | `WEBSITE_URL` | 兑换地址（回复模板 `{site}` 用它） |
 | `DB_PATH` | SQLite 路径，默认 `/data/wechat_redeem.db` |
+| `TRUST_PROXY_HEADERS` | 置 `1` 才采信 `cf-connecting-ip`（CF Tunnel/反代部署），直连保持 `0` |
+| `ALLOWED_HOSTS` | Host 头白名单（逗号分隔），生产填公网域名 |
 
 ## Docker 部署
 ```bash

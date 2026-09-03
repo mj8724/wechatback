@@ -1,3 +1,4 @@
+import os
 import time
 from collections import defaultdict
 
@@ -19,11 +20,12 @@ def _prune(store: dict, now: float):
 
 
 def get_client_ip(request: Request) -> str:
-    # CF Tunnel 部署：只有 cf-connecting-ip 由 Cloudflare 边缘权威写入；
-    # x-real-ip / x-forwarded-for 客户端可伪造，一律不采信。
-    cf_ip = request.headers.get("cf-connecting-ip")
-    if cf_ip:
-        return cf_ip.strip()
+    # 仅当显式声明信任代理（CF Tunnel / 反代部署）时才采信 cf-connecting-ip
+    # （该头由 Cloudflare 边缘权威写入）；直连部署保持默认 0，只用连接 IP。
+    if os.environ.get("TRUST_PROXY_HEADERS", "0") == "1":
+        cf_ip = request.headers.get("cf-connecting-ip")
+        if cf_ip:
+            return cf_ip.strip()
     return request.client.host if request.client else "127.0.0.1"
 
 
@@ -60,36 +62,42 @@ def record_login_success(ip: str):
 
 # ----------------- 微信入口节流 -----------------
 _wechat_hits = defaultdict(list)
+_openid_hits = defaultdict(list)
+
+
+def _hit_allowed(store: dict, key: str, limit: int, window: int) -> bool:
+    now = time.time()
+    cutoff = now - window
+    hits = [t for t in store[key] if t > cutoff]
+    if len(hits) >= limit:
+        store[key] = hits
+        return False
+    hits.append(now)
+    store[key] = hits
+    return True
 
 
 def check_wechat_throttle(ip: str) -> bool:
     """每 IP 每分钟至多 WECHAT_RATE_PER_MIN 次，超限返回 False。"""
-    now = time.time()
-    _prune(_wechat_hits, now)
-    window_start = now - 60
-    hits = [t for t in _wechat_hits[ip] if t > window_start]
-    if len(hits) >= config.WECHAT_RATE_PER_MIN:
-        _wechat_hits[ip] = hits
-        return False
-    hits.append(now)
-    _wechat_hits[ip] = hits
-    return True
+    _prune(_wechat_hits, time.time())
+    return _hit_allowed(_wechat_hits, ip, config.WECHAT_RATE_PER_MIN, 60)
 
 
-def normalize_pwd(pwd: str) -> tuple:
-    if not pwd:
-        return "", "", ""
-    p = pwd.strip()
-    p_cn = p.replace("!", "！")
-    p_en = p.replace("！", "!")
-    return p, p_cn, p_en
+def check_openid_throttle(openid: str) -> bool:
+    """每 OpenID 每分钟至多 WECHAT_RATE_PER_OPENID 次，超限返回 False。"""
+    _prune(_openid_hits, time.time())
+    return _hit_allowed(_openid_hits, openid or "_", config.WECHAT_RATE_PER_OPENID, 60)
+
+
+def _canon(pwd: str) -> str:
+    return (pwd or "").strip().replace("！", "!")
+
+
+def escape_like(s: str) -> str:
+    return (s or "").replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 def is_valid_pwd(pwd: str) -> bool:
     if not pwd:
         return False
-    p, p_cn, p_en = normalize_pwd(pwd)
-    for check in [p, p_cn, p_en]:
-        if check in config.ADMIN_PASSWORDS:
-            return True
-    return False
+    return _canon(pwd) in config.ADMIN_PASSWORDS

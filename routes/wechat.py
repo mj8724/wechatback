@@ -1,13 +1,16 @@
 import hashlib
 import hmac
+import logging
 import time
 import xml.etree.ElementTree as ET
 
 from fastapi import APIRouter, Request, Response
 
 import config
-from core.security import check_wechat_throttle, get_client_ip
+from core.security import check_openid_throttle, check_wechat_throttle, get_client_ip
 from core.wechat import build_reply_xml, decide_reply, save_message
+
+logger = logging.getLogger("wechat")
 
 router = APIRouter()
 
@@ -52,15 +55,17 @@ async def handle_wechat_msg(
 ):
     # 先验签：失败只回 success（避免微信重试），不执行业务
     if not verify_signature(signature, timestamp, nonce):
+        logger.info("wechat signature reject")
         return SUCCESS
     if not check_wechat_throttle(get_client_ip(request)):
+        logger.info("wechat ip throttled")
         return SUCCESS
 
     body = await request.body()
     if len(body) > config.WECHAT_MAX_BODY:
         return SUCCESS
-    head = body[:200].lower()
-    if b"<!doctype" in head or b"<!entity" in head:
+    lowered = body.lower()
+    if b"<!doctype" in lowered or b"<!entity" in lowered:
         return SUCCESS
     try:
         root = ET.fromstring(body)
@@ -72,6 +77,9 @@ async def handle_wechat_msg(
     to_user = root.findtext("ToUserName", "")      # 公众号原始ID
     event = root.findtext("Event", "").lower()
     content = root.findtext("Content", "") or ""
+    if not check_openid_throttle(from_user):
+        logger.info("wechat openid throttled")
+        return SUCCESS
 
     # 所有消息一律先持久化记录
     save_message(from_user, msg_type, content or f"[{event}]" if msg_type == "event" else content)

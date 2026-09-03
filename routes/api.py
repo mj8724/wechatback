@@ -4,8 +4,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 import config
-from core.auth import bearer_token, issue_token, require_admin, revoke_token
-from core.security import check_rate_limit, get_client_ip, is_valid_pwd, record_login_failure, record_login_success
+from core.auth import bearer_token, issue_token, require_admin, revoke_all_tokens, revoke_token
+from core.security import check_rate_limit, escape_like, get_client_ip, is_valid_pwd, record_login_failure, record_login_success
 from core.rules import get_setting, list_all_rules, set_setting
 from db.database import db
 
@@ -63,6 +63,13 @@ def logout(request: Request):
     return {"status": "success"}
 
 
+@router.post("/api/logout-all")
+def logout_all(request: Request):
+    require_admin(request)
+    revoke_all_tokens()
+    return {"status": "success"}
+
+
 @router.get("/api/me")
 def me(request: Request):
     require_admin(request)
@@ -110,6 +117,9 @@ def import_codes(req: ImportRequest, request: Request):
     require_admin(request)
     if len(req.codes) > 2000:
         raise HTTPException(status_code=400, detail="单次最多导入 2000 个")
+    for code in req.codes:
+        if isinstance(code, str) and len(code.strip()) > 128:
+            raise HTTPException(status_code=400, detail="单个激活码最多 128 字")
 
     added = 0
     duplicates = []
@@ -211,11 +221,11 @@ def list_users(request: Request, q: str = "", limit: int = 100, offset: int = 0)
     with db() as conn:
         cursor = conn.cursor()
         if q.strip():
-            like = f"%{q.strip()}%"
-            cursor.execute("SELECT COUNT(*) as total FROM users WHERE openid LIKE ? OR code LIKE ?", (like, like))
+            like = f"%{escape_like(q.strip())}%"
+            cursor.execute("SELECT COUNT(*) as total FROM users WHERE openid LIKE ? ESCAPE '\\' OR code LIKE ? ESCAPE '\\'", (like, like))
             total = cursor.fetchone()["total"]
             cursor.execute(
-                "SELECT openid, code, created_at FROM users WHERE openid LIKE ? OR code LIKE ? "
+                "SELECT openid, code, created_at FROM users WHERE openid LIKE ? ESCAPE '\\' OR code LIKE ? ESCAPE '\\' "
                 "ORDER BY id DESC LIMIT ? OFFSET ?", (like, like, limit, offset))
         else:
             cursor.execute("SELECT COUNT(*) as total FROM users")
@@ -237,8 +247,8 @@ def list_codes(request: Request, q: str = "", status: str = "", limit: int = 100
         conds.append("status = ?")
         params.append(status)
     if q.strip():
-        conds.append("(code LIKE ? OR assigned_openid LIKE ?)")
-        like = f"%{q.strip()}%"
+        conds.append("(code LIKE ? ESCAPE '\\' OR assigned_openid LIKE ? ESCAPE '\\')")
+        like = f"%{escape_like(q.strip())}%"
         params.extend([like, like])
     where = ("WHERE " + " AND ".join(conds)) if conds else ""
     with db() as conn:
@@ -260,11 +270,11 @@ def list_messages(request: Request, q: str = "", limit: int = 100, offset: int =
     with db() as conn:
         cursor = conn.cursor()
         if q.strip():
-            like = f"%{q.strip()}%"
-            cursor.execute("SELECT COUNT(*) as total FROM messages WHERE openid LIKE ? OR content LIKE ?", (like, like))
+            like = f"%{escape_like(q.strip())}%"
+            cursor.execute("SELECT COUNT(*) as total FROM messages WHERE openid LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\'", (like, like))
             total = cursor.fetchone()["total"]
             cursor.execute(
-                "SELECT * FROM messages WHERE openid LIKE ? OR content LIKE ? "
+                "SELECT * FROM messages WHERE openid LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' "
                 "ORDER BY id DESC LIMIT ? OFFSET ?", (like, like, limit, offset))
         else:
             cursor.execute("SELECT COUNT(*) as total FROM messages")
@@ -327,10 +337,15 @@ def _check_rule(req: RuleRequest):
     kw = (req.keyword or "").strip()
     if not kw:
         raise HTTPException(status_code=400, detail="关键词不能为空")
+    if len(kw) > 64:
+        raise HTTPException(status_code=400, detail="关键词最多 64 字")
     if req.mode not in ("contains", "exact"):
         raise HTTPException(status_code=400, detail="匹配模式只能是 contains / exact")
     if req.action not in ("none", "code"):
         raise HTTPException(status_code=400, detail="动作只能是 none / code")
+    if len(req.content or "") > 2000:
+        raise HTTPException(status_code=400, detail="回复内容最多 2000 字")
+    req.priority = max(0, min(int(req.priority or 0), 10000))
     return kw
 
 
@@ -385,17 +400,17 @@ def delete_rule(rule_id: int, request: Request):
 @router.get("/api/settings")
 def get_settings(request: Request):
     require_admin(request)
-    keys = ["welcome_reply", "fallback_reply", "repeat_reply", "new_reply", "empty_reply", "group_id"]
+    keys = ["welcome_reply", "fallback_reply", "new_reply", "empty_reply", "group_id"]
     return {"status": "success", "settings": {k: get_setting(k) for k in keys}}
 
 
 @router.put("/api/settings")
 def update_settings(req: SettingsRequest, request: Request):
     require_admin(request)
-    allowed = {"welcome_reply", "fallback_reply", "repeat_reply", "new_reply", "empty_reply", "group_id"}
+    allowed = {"welcome_reply", "fallback_reply", "new_reply", "empty_reply", "group_id"}
     updated = []
     for k, v in (req.settings or {}).items():
-        if k in allowed and isinstance(v, str):
+        if k in allowed and isinstance(v, str) and len(v) <= 2000:
             set_setting(k, v)
             updated.append(k)
     return {"status": "success", "updated": updated}

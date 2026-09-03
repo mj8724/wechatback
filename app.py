@@ -8,11 +8,14 @@
 
 from pathlib import Path
 
+import logging
 import os
 
 from fastapi import FastAPI
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
 from db.database import init_db
 from routes import api, wechat
@@ -40,6 +43,13 @@ if INDEX_FILE.is_file():
     @app.get("/admin", include_in_schema=False)
     @app.get("/login", include_in_schema=False)
     def spa():
+        return FileResponse(INDEX_FILE)
+
+    @app.get("/{path:path}", include_in_schema=False)
+    def spa_fallback(path: str):
+        # 仅 HTML 页面请求回退 SPA；API/资源路径保持原状态码
+        if path.startswith(("api/", "wechat", "assets/", "healthz", "docs", "openapi.json", "MP_verify_")):
+            return JSONResponse(status_code=404, content={"detail": "不存在"})
         return FileResponse(INDEX_FILE)
 else:
 

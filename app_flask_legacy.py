@@ -1,3 +1,6 @@
+"""⚠️ 归档参考文件，禁止直接运行上线。
+旧版 Flask 单体实现，仅用于对照历史逻辑；现网入口是 FastAPI（app.py）。
+如需临时运行，必须显式提供 WECHAT_TOKEN / ADMIN_PASSWORD 环境变量。"""
 import os
 import sys
 import time
@@ -10,8 +13,10 @@ from flask import Flask, request, jsonify, render_template_string, Response
 
 app = Flask(__name__)
 
-WECHAT_TOKEN = os.environ.get("WECHAT_TOKEN", "liubaiwechat2026")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "REDACTED-PASSWORD")
+WECHAT_TOKEN = os.environ.get("WECHAT_TOKEN", "")
+ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
+if not WECHAT_TOKEN or not ADMIN_PASSWORD:
+    raise RuntimeError("归档文件禁止无密钥运行：请设置 WECHAT_TOKEN / ADMIN_PASSWORD")
 DB_PATH = os.environ.get("DB_PATH", "/data/wechat_redeem.db")
 REDEEM_URL = os.environ.get("REDEEM_URL", "https://newapi.liubaitech.cn")
 WECHAT_ADMIN_ID = "810466205"

@@ -172,7 +172,11 @@ export async function deleteUnusedCodes() {
 }
 
 export function downloadCSV(filename, headers, rows) {
-  const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
+  const esc = (v) => {
+    let s = String(v ?? '')
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s
+    return `"${s.replace(/"/g, '""')}"`
+  }
   const csv = '\ufeff' + [headers, ...rows].map((r) => r.map(esc).join(',')).join('\n')
   const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
   const a = document.createElement('a')

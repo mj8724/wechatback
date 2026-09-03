@@ -11,3 +11,5 @@ services:
       - .env
     environment:
       - DB_PATH=/data/wechat_redeem.db
+      # 生产域名（逗号分隔），用于 Host 头校验；经 CF Tunnel 接入时填公网域名
+      # - ALLOWED_HOSTS=wx.example.com

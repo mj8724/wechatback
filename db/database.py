@@ -24,6 +24,9 @@ def db():
 def init_db():
     os.makedirs(os.path.dirname(config.DB_PATH), exist_ok=True)
     with db() as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=30000")
         cursor = conn.cursor()
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS codes (
@@ -59,9 +62,11 @@ def init_db():
         CREATE TABLE IF NOT EXISTS admin_tokens (
             token TEXT PRIMARY KEY,
             expires_at REAL NOT NULL,
+            issued_at REAL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """)
+        _migrate(cursor)
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS keyword_rules (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -83,6 +88,25 @@ def init_db():
         conn.commit()
         _seed_defaults(cursor)
         conn.commit()
+
+
+def _migrate(cursor):
+    """幂等迁移：老库补列补索引，失败只跳过不中断启动。"""
+    try:
+        cols = [r[1] for r in cursor.execute("PRAGMA table_info(admin_tokens)").fetchall()]
+        if "issued_at" not in cols:
+            cursor.execute("ALTER TABLE admin_tokens ADD COLUMN issued_at REAL")
+            cursor.execute("UPDATE admin_tokens SET issued_at = expires_at - 86400 WHERE issued_at IS NULL")
+    except Exception:
+        pass
+    try:
+        cursor.execute(
+            "SELECT code FROM users GROUP BY code HAVING COUNT(*) > 1 LIMIT 1"
+        )
+        if cursor.fetchone() is None:
+            cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_user_code ON users(code)")
+    except Exception:
+        pass
 
 
 def _seed_defaults(cursor):
