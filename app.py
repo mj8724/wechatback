@@ -8,13 +8,21 @@
 
 from pathlib import Path
 
+import os
+
 from fastapi import FastAPI
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 
 from db.database import init_db
 from routes import api, wechat
 
+import config
+
 app = FastAPI(title="WeChat Redeem Hub")
+
+allowed_hosts = [h.strip() for h in os.environ.get("ALLOWED_HOSTS", "*").split(",") if h.strip()] or ["*"]
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts)
 
 init_db()
 

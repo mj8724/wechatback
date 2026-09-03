@@ -85,8 +85,23 @@ export async function deleteCode(code) {
   return data
 }
 
-export async function listUsers() {
-  const res = await req('/api/users')
+export async function listUsers(params = {}) {
+  const q = new URLSearchParams({ limit: 100, offset: 0, ...params })
+  const res = await req(`/api/users?${q}`)
+  if (!res.ok) throw { status: res.status, detail: '无权限访问' }
+  return res.json()
+}
+
+export async function listCodes(params = {}) {
+  const q = new URLSearchParams({ limit: 100, offset: 0, ...params })
+  const res = await req(`/api/codes?${q}`)
+  if (!res.ok) throw { status: res.status, detail: '无权限访问' }
+  return res.json()
+}
+
+export async function listMessages(params = {}) {
+  const q = new URLSearchParams({ limit: 100, offset: 0, ...params })
+  const res = await req(`/api/messages?${q}`)
   if (!res.ok) throw { status: res.status, detail: '无权限访问' }
   return res.json()
 }
@@ -100,6 +115,41 @@ export async function resetUser(openid) {
   if (res.status === 429) throw { status: 429, detail: data.detail }
   if (!res.ok) throw { status: res.status, detail: data.detail || '重置失败' }
   return data
+}
+
+export async function listRules() {
+  const res = await req('/api/rules')
+  if (!res.ok) throw { status: res.status, detail: '无权限访问' }
+  return res.json()
+}
+
+export async function saveRule(rule) {
+  const hasId = !!rule.id
+  const res = await req(hasId ? `/api/rules/${rule.id}` : '/api/rules', {
+    method: hasId ? 'PUT' : 'POST',
+    body: JSON.stringify(rule),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw { status: res.status, detail: data.detail || '保存失败' }
+  return data
+}
+
+export async function deleteRule(id) {
+  const res = await req(`/api/rules/${id}`, { method: 'DELETE' })
+  if (!res.ok) throw { status: res.status, detail: '删除失败' }
+  return res.json()
+}
+
+export async function getSettings() {
+  const res = await req('/api/settings')
+  if (!res.ok) throw { status: res.status, detail: '无权限访问' }
+  return res.json()
+}
+
+export async function saveSettings(settings) {
+  const res = await req('/api/settings', { method: 'PUT', body: JSON.stringify({ settings }) })
+  if (!res.ok) throw { status: res.status, detail: '保存失败' }
+  return res.json()
 }
 
 export async function resetUsers(openids) {

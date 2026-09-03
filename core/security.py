@@ -9,6 +9,15 @@ import config
 login_attempts = defaultdict(lambda: {"count": 0, "lock_until": 0.0, "last_attempt": 0.0})
 
 
+def _prune(store: dict, now: float):
+    """内存限流表过大时淘汰过期条目，防无界增长。"""
+    if len(store) > 10000:
+        for k in [k for k, v in store.items()
+                  if (v.get("lock_until", 0) if isinstance(v, dict) else 0) < now - 3600
+                  and (not isinstance(v, list) or not v or v[-1] < now - 3600)]:
+            del store[k]
+
+
 def get_client_ip(request: Request) -> str:
     # CF Tunnel 部署：只有 cf-connecting-ip 由 Cloudflare 边缘权威写入；
     # x-real-ip / x-forwarded-for 客户端可伪造，一律不采信。
@@ -20,6 +29,7 @@ def get_client_ip(request: Request) -> str:
 
 def check_rate_limit(ip: str):
     now = time.time()
+    _prune(login_attempts, now)
     info = login_attempts[ip]
     if info["lock_until"] > now:
         remaining = int(info["lock_until"] - now)
@@ -55,6 +65,7 @@ _wechat_hits = defaultdict(list)
 def check_wechat_throttle(ip: str) -> bool:
     """每 IP 每分钟至多 WECHAT_RATE_PER_MIN 次，超限返回 False。"""
     now = time.time()
+    _prune(_wechat_hits, now)
     window_start = now - 60
     hits = [t for t in _wechat_hits[ip] if t > window_start]
     if len(hits) >= config.WECHAT_RATE_PER_MIN:

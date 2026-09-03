@@ -3,6 +3,7 @@ import time
 from typing import Optional
 
 import config
+from core.rules import get_setting, load_rules, render
 from db.database import db
 
 MAX_ASSIGN_RETRIES = 5
@@ -32,7 +33,7 @@ def _claim_code(conn, openid: str):
 
     code_id = code_row["id"]
     code_val = code_row["code"]
-    now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+    now_str = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
 
     try:
         cursor.execute("BEGIN IMMEDIATE")
@@ -61,60 +62,60 @@ def _claim_code(conn, openid: str):
 
 
 def get_or_assign_code(openid: str) -> str:
+    """兼容入口：按默认新码模板发码（规则引擎内部使用 render_code_reply）。"""
     if not openid:
         return "无法获取您的用户信息，请稍后重试。"
+    code_val, kind = assign_code(openid)
+    if kind == "retry" or kind == "error":
+        return "系统繁忙，请稍后再试！"
+    if kind == "empty":
+        return get_setting("empty_reply")
+    if kind == "existing":
+        return render(get_setting("repeat_reply"), code_val)
+    return render(get_setting("new_reply"), code_val)
 
+
+def decide_reply(msg_type: str, event: str, content: str, from_user: str) -> Optional[str]:
+    if msg_type == "event" and event in ["subscribe", "scan"]:
+        return get_setting("welcome_reply")
+    if msg_type != "text":
+        return None
+    t = content.strip().lower()
+    for rule in load_rules():
+        kw = (rule["keyword"] or "").lower()
+        if not kw:
+            continue
+        hit = (t == kw) if rule["mode"] == "exact" else (kw in t)
+        if not hit:
+            continue
+        if rule["action"] == "code":
+            return render_code_reply(rule["content"], from_user)
+        return render(rule["content"])
+    return get_setting("fallback_reply")
+
+
+def render_code_reply(template: str, openid: str) -> str:
+    code_val, kind = assign_code(openid)
+    if kind == "empty":
+        return get_setting("empty_reply")
+    if kind == "existing":
+        return render(get_setting("repeat_reply"), code_val)
+    if kind == "error":
+        return "系统繁忙，请稍后再试！"
+    return render(template, code_val)
+
+
+def assign_code(openid: str):
+    """发码并返回 (code, kind)，kind ∈ new/existing/empty/error。"""
+    if not openid:
+        return None, "error"
     code_val, kind = None, "retry"
     for _ in range(MAX_ASSIGN_RETRIES):
         with db() as conn:
             code_val, kind = _claim_code(conn, openid)
         if kind != "retry":
             break
-
-    if kind == "retry" or kind == "error":
-        return "系统繁忙，请稍后再试！"
-    if kind == "empty":
-        return f"抱歉，当前激活码已被领完，请稍后再试或联系管理员！\n平台地址：{config.WEBSITE_URL}"
-    if kind == "existing":
-        return (
-            f"您之前已成功领取过专属激活码：\n\n"
-            f"【{code_val}】\n\n"
-            f"👉 兑换地址：{config.WEBSITE_URL}\n"
-            f"每个用户限领一次，已领取的激活码可随时在上方平台完成兑换！"
-        )
-    return (
-        f"🎉 您的专属激活码为：\n\n"
-        f"【{code_val}】\n\n"
-        f"👉 兑换地址：{config.WEBSITE_URL}\n\n"
-        f"每个用户限领一次，请前往上方兑换地址完成充值兑换！"
-    )
-
-
-def decide_reply(msg_type: str, event: str, content: str, from_user: str) -> Optional[str]:
-    reply_content = None
-    if msg_type == "event" and event in ["subscribe", "scan"]:
-        reply_content = (
-            f"🎉 欢迎关注！\n\n"
-            f"发送【激活码】，即可获取您的专属激活码（每个用户限领一次）\n\n"
-            f"发送【微信群】，即可获取微信群入口，一起交流！"
-        )
-    elif msg_type == "text":
-        t = content.strip().lower()
-        if "激活码" in t or "激活" in t or "兑换码" in t:
-            reply_content = get_or_assign_code(from_user)
-        elif "微信群" in t or "加群" in t or ("群" in t and "激活" not in t):
-            reply_content = (
-                f"📱 请添加我的微信号：{config.GROUP_WECHAT_ID}\n\n"
-                f"添加时备注【进群】，我会拉您进入微信群，一起交流！"
-            )
-        else:
-            reply_content = (
-                f"👋 收到您的留言！\n\n"
-                f"• 发送【激活码】→ 获取专属激活码\n"
-                f"• 发送【微信群】→ 获取微信群入口\n"
-                f"• 每个用户限领一次激活码"
-            )
-    return reply_content
+    return code_val, kind
 
 
 def build_reply_xml(from_user: str, to_user: str, reply_content: str) -> str:

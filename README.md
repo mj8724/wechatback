@@ -1,50 +1,55 @@
-# wechatback - 微信发码后台
+# wechatback - 微信公众号激活码分发后台
 
-## 说明
-- FastAPI 分层应用：`app.py` 入口 + `config/` `db/` `core/` `routes/`（旧单体已拆分）
-- 旧版 Flask 备份：`app_flask_legacy.py`（仅参考）
-- 前端：`frontend/`（Vue 3 + Vite + Tailwind，构建产物 `frontend/dist` 由 FastAPI 托管）
-- Docker 部署：多阶段 `Dockerfile` + `docker-compose.yml`
+开箱即用的微信公众号被动回复 + 激活码分发系统：用户发关键词领码（一人一码），附带 Vue 管理后台（库存 / 用户 / 留言 / 自定义回复规则）。
 
-## 核心功能
-- `GET /wechat` 微信校验；`POST /wechat` 被动回复（验签名 + 时间窗口 + 节流）：`激活码`→发码，`微信群`→810466205，其他→引导
-- `GET /admin` 控制台（Vue SPA，独立 `/login` 登录页，Bearer token 鉴权）
-- 管理 API（均需 `Authorization: Bearer <token>`，`POST /api/login {pwd}` 获取）：
-  `GET /api/stats`、`GET /api/users`、`POST /api/import`（去重识别）、
-  `POST /api/codes/reset`、`POST /api/codes/delete`、`POST /api/codes/delete-unused`、
-  `POST /api/users/reset`、`POST /api/users/reset-batch`
-- DB `/data/wechat_redeem.db` 表 `codes` + `users` + `messages` + `admin_tokens`
+## 功能
+- 微信被动回复：关键词规则引擎（包含/完全匹配、优先级、启用开关），发码动作一人一码、防超发
+- 回复内容全自定义：欢迎语 / 默认回复 / 发码模板 / 重复领取 / 库存告罄，支持 `{code}` `{site}` `{group}` 占位符
+- 管理后台（Vue 3 SPA，独立登录页 + 7 天 token）：总览 / 激活码（导入去重、搜索、重置、删除、清空、导出 CSV）/ 用户（按人重置、批量重置）/ 留言（搜索、导出）/ 回复规则
+- 安全：签名校验 + 时间窗口、登录限流、IP 节流、Bearer 鉴权、密钥全走环境变量
 
-## 环境变量（必需，见 `.env.example`）
+## 快速开始
+
 ```bash
-cp .env.example .env   # 填写后启动，无 WECHAT_TOKEN / ADMIN_PASSWORD 拒绝启动
-```
-- `WECHAT_TOKEN`：须与微信公众平台配置一致
-- `ADMIN_PASSWORD`：管理密码（逗号分隔可配多个），只存 `.env`（不进仓库）
-- `DB_PATH`：默认 `/data/wechat_redeem.db`，本地可用 `./data/wechat_redeem.db`
-
-## 本地运行
-```bash
+cp .env.example .env   # 填写 WECHAT_TOKEN（须与微信公众平台一致）与 ADMIN_PASSWORD
 pip install -r requirements.txt
 cd frontend && npm install && npm run build && cd ..
 set -a; source .env; set +a
 uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
-## Docker
+打开 http://127.0.0.1:8000/admin，用 `ADMIN_PASSWORD` 登录。
+
+## 微信公众平台配置
+1. 服务器地址填 `https://你的域名/wechat`，令牌填 `WECHAT_TOKEN` 的值
+2. 启用后发送关键词即按规则回复；首次使用建议先在后台 💬 回复里改好文案与群微信号
+
+## 配置（环境变量，见 `.env.example`）
+| 变量 | 说明 |
+|---|---|
+| `WECHAT_TOKEN` | 微信校验 Token（必需，与公众平台一致） |
+| `ADMIN_PASSWORD` | 管理密码（必需，逗号分隔可配多个） |
+| `GROUP_WECHAT_ID` | 群入口微信号（可在后台设置里改） |
+| `WEBSITE_URL` | 兑换地址（回复模板 `{site}` 用它） |
+| `DB_PATH` | SQLite 路径，默认 `/data/wechat_redeem.db` |
+
+## Docker 部署
 ```bash
-docker build -t wechat-redeem:latest .
-docker run -d --name wechat-redeem --restart always -p 8000:8000 \
-  -v /opt/wechat-redeem/data:/data --env-file .env wechat-redeem:latest
+docker compose up -d --build   # 从 .env 读密钥，数据卷 ./data（compose 可改）
 ```
-或 `docker compose up -d --build`（compose 从 `.env` 读取密钥）。
+生产请置于反向代理（TLS）之后，不要直接暴露 8000；确保数据卷目录对容器用户可写。
 
-## 线上路径
-- 公网：https://wx.liubaitech.cn (CF Tunnel -> localhost:8000)
-- 容器：wechat-redeem @ 1Panel (debian 192.168.31.108)
-- 管理：https://wx.liubaitech.cn/admin（密码见服务器 `.env`，已轮换，旧密码失效）
-- 部署注意：`.env` 须同步到服务器（`/opt/wechat-redeem/.env`），仅透过 CF Tunnel 对外，不要直接暴露 8000
+## 管理 API（需 `Authorization: Bearer <token>`，`POST /api/login {pwd}` 获取）
+- `GET /api/stats`、`GET /api/users`（`q/limit/offset`）、`GET /api/codes`、`GET /api/messages`
+- `POST /api/import`（去重）、`POST /api/codes/reset|delete|delete-unused`
+- `POST /api/users/reset|reset-batch`
+- `GET/POST /api/rules`、`PUT/DELETE /api/rules/{id}`、`GET/PUT /api/settings`
 
-## SSH
-cloudflared access tcp --hostname sshhome.liubaitech.cn --url 127.0.0.1:2222
-ssh -p 2222 root@127.0.0.1
+## 目录
+```
+app.py config.py        # 入口 + 环境配置
+db/ core/ routes/       # 持久化 / 业务（含规则引擎、防刷）/ HTTP 接入
+frontend/               # Vue 3 + Vite + Tailwind 管理后台
+```
+
+MIT License，见 [LICENSE](LICENSE)。

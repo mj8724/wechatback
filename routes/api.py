@@ -6,6 +6,7 @@ from pydantic import BaseModel
 import config
 from core.auth import bearer_token, issue_token, require_admin, revoke_token
 from core.security import check_rate_limit, get_client_ip, is_valid_pwd, record_login_failure, record_login_success
+from core.rules import get_setting, list_all_rules, set_setting
 from db.database import db
 
 router = APIRouter()
@@ -29,6 +30,19 @@ class UserResetRequest(BaseModel):
 
 class UserBatchResetRequest(BaseModel):
     openids: List[str] = []
+
+
+class RuleRequest(BaseModel):
+    keyword: str = ""
+    mode: str = "contains"
+    action: str = "none"
+    content: str = ""
+    priority: int = 100
+    enabled: bool = True
+
+
+class SettingsRequest(BaseModel):
+    settings: dict = {}
 
 
 @router.post("/api/login")
@@ -94,6 +108,8 @@ def get_stats(request: Request):
 @router.post("/api/import")
 def import_codes(req: ImportRequest, request: Request):
     require_admin(request)
+    if len(req.codes) > 2000:
+        raise HTTPException(status_code=400, detail="单次最多导入 2000 个")
 
     added = 0
     duplicates = []
@@ -188,15 +204,74 @@ def delete_unused_codes(request: Request):
 
 
 @router.get("/api/users")
-def list_users(request: Request):
+def list_users(request: Request, q: str = "", limit: int = 100, offset: int = 0):
     require_admin(request)
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
     with db() as conn:
         cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) as total FROM users")
-        total = cursor.fetchone()["total"]
-        cursor.execute("SELECT openid, code, created_at FROM users ORDER BY id DESC LIMIT 500")
+        if q.strip():
+            like = f"%{q.strip()}%"
+            cursor.execute("SELECT COUNT(*) as total FROM users WHERE openid LIKE ? OR code LIKE ?", (like, like))
+            total = cursor.fetchone()["total"]
+            cursor.execute(
+                "SELECT openid, code, created_at FROM users WHERE openid LIKE ? OR code LIKE ? "
+                "ORDER BY id DESC LIMIT ? OFFSET ?", (like, like, limit, offset))
+        else:
+            cursor.execute("SELECT COUNT(*) as total FROM users")
+            total = cursor.fetchone()["total"]
+            cursor.execute(
+                "SELECT openid, code, created_at FROM users ORDER BY id DESC LIMIT ? OFFSET ?",
+                (limit, offset))
         users = [dict(r) for r in cursor.fetchall()]
     return {"status": "success", "total": total, "users": users}
+
+
+@router.get("/api/codes")
+def list_codes(request: Request, q: str = "", status: str = "", limit: int = 100, offset: int = 0):
+    require_admin(request)
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    conds, params = [], []
+    if status in ("unused", "assigned"):
+        conds.append("status = ?")
+        params.append(status)
+    if q.strip():
+        conds.append("(code LIKE ? OR assigned_openid LIKE ?)")
+        like = f"%{q.strip()}%"
+        params.extend([like, like])
+    where = ("WHERE " + " AND ".join(conds)) if conds else ""
+    with db() as conn:
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT COUNT(*) as total FROM codes {where}", params)
+        total = cursor.fetchone()["total"]
+        cursor.execute(
+            f"SELECT id, code, status, assigned_openid, assigned_at, created_at FROM codes "
+            f"{where} ORDER BY id DESC LIMIT ? OFFSET ?", (*params, limit, offset))
+        records = [dict(r) for r in cursor.fetchall()]
+    return {"status": "success", "total": total, "codes": records}
+
+
+@router.get("/api/messages")
+def list_messages(request: Request, q: str = "", limit: int = 100, offset: int = 0):
+    require_admin(request)
+    limit = max(1, min(limit, 500))
+    offset = max(0, offset)
+    with db() as conn:
+        cursor = conn.cursor()
+        if q.strip():
+            like = f"%{q.strip()}%"
+            cursor.execute("SELECT COUNT(*) as total FROM messages WHERE openid LIKE ? OR content LIKE ?", (like, like))
+            total = cursor.fetchone()["total"]
+            cursor.execute(
+                "SELECT * FROM messages WHERE openid LIKE ? OR content LIKE ? "
+                "ORDER BY id DESC LIMIT ? OFFSET ?", (like, like, limit, offset))
+        else:
+            cursor.execute("SELECT COUNT(*) as total FROM messages")
+            total = cursor.fetchone()["total"]
+            cursor.execute("SELECT * FROM messages ORDER BY id DESC LIMIT ? OFFSET ?", (limit, offset))
+        messages = [dict(r) for r in cursor.fetchall()]
+    return {"status": "success", "total": total, "messages": messages}
 
 
 def _reset_user_by_openid(cursor, openid: str):
@@ -246,3 +321,81 @@ def reset_users_batch(req: UserBatchResetRequest, request: Request):
         conn.commit()
     return {"status": "success", "reset": reset, "not_found": not_found,
             "message": f"已重置 {len(reset)} 人" + (f"，{len(not_found)} 人无码可收" if not_found else "")}
+
+
+def _check_rule(req: RuleRequest):
+    kw = (req.keyword or "").strip()
+    if not kw:
+        raise HTTPException(status_code=400, detail="关键词不能为空")
+    if req.mode not in ("contains", "exact"):
+        raise HTTPException(status_code=400, detail="匹配模式只能是 contains / exact")
+    if req.action not in ("none", "code"):
+        raise HTTPException(status_code=400, detail="动作只能是 none / code")
+    return kw
+
+
+@router.get("/api/rules")
+def list_rules(request: Request):
+    require_admin(request)
+    return {"status": "success", "rules": list_all_rules()}
+
+
+@router.post("/api/rules")
+def create_rule(req: RuleRequest, request: Request):
+    require_admin(request)
+    kw = _check_rule(req)
+    with db() as conn:
+        cur = conn.execute(
+            "INSERT INTO keyword_rules (keyword, mode, action, content, priority, enabled) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (kw, req.mode, req.action, req.content or "", int(req.priority), 1 if req.enabled else 0),
+        )
+        conn.commit()
+        rule_id = cur.lastrowid
+    return {"status": "success", "id": rule_id}
+
+
+@router.put("/api/rules/{rule_id}")
+def update_rule(rule_id: int, req: RuleRequest, request: Request):
+    require_admin(request)
+    kw = _check_rule(req)
+    with db() as conn:
+        cur = conn.execute(
+            "UPDATE keyword_rules SET keyword = ?, mode = ?, action = ?, content = ?, "
+            "priority = ?, enabled = ? WHERE id = ?",
+            (kw, req.mode, req.action, req.content or "", int(req.priority), 1 if req.enabled else 0, rule_id),
+        )
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="规则不存在")
+    return {"status": "success"}
+
+
+@router.delete("/api/rules/{rule_id}")
+def delete_rule(rule_id: int, request: Request):
+    require_admin(request)
+    with db() as conn:
+        cur = conn.execute("DELETE FROM keyword_rules WHERE id = ?", (rule_id,))
+        conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="规则不存在")
+    return {"status": "success"}
+
+
+@router.get("/api/settings")
+def get_settings(request: Request):
+    require_admin(request)
+    keys = ["welcome_reply", "fallback_reply", "repeat_reply", "new_reply", "empty_reply", "group_id"]
+    return {"status": "success", "settings": {k: get_setting(k) for k in keys}}
+
+
+@router.put("/api/settings")
+def update_settings(req: SettingsRequest, request: Request):
+    require_admin(request)
+    allowed = {"welcome_reply", "fallback_reply", "repeat_reply", "new_reply", "empty_reply", "group_id"}
+    updated = []
+    for k, v in (req.settings or {}).items():
+        if k in allowed and isinstance(v, str):
+            set_setting(k, v)
+            updated.append(k)
+    return {"status": "success", "updated": updated}

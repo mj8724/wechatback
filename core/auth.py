@@ -14,7 +14,7 @@ from core.security import (
 )
 from db.database import db
 
-TOKEN_TTL = 7 * 24 * 3600  # token 有效期 7 天
+TOKEN_TTL = 24 * 3600  # token 有效期 24 小时，每次验签成功滑动续期
 
 
 def issue_token() -> tuple:
@@ -32,16 +32,21 @@ def issue_token() -> tuple:
 def verify_token(token: str) -> bool:
     if not token:
         return False
+    now = time.time()
     with db() as conn:
         row = conn.execute(
             "SELECT expires_at FROM admin_tokens WHERE token = ?", (token,)
         ).fetchone()
         if row is None:
             return False
-        if row["expires_at"] <= time.time():
+        if row["expires_at"] <= now:
             conn.execute("DELETE FROM admin_tokens WHERE token = ?", (token,))
             conn.commit()
             return False
+        conn.execute(
+            "UPDATE admin_tokens SET expires_at = ? WHERE token = ?", (now + TOKEN_TTL, token)
+        )
+        conn.commit()
     return True
 
 

@@ -34,6 +34,11 @@ def mp_verify_wildcard(token: str):
     return Response(content=token, media_type="text/plain")
 
 
+@router.get("/healthz", include_in_schema=False)
+def healthz():
+    return {"status": "ok"}
+
+
 @router.get("/wechat")
 def verify_wechat(signature: str = "", timestamp: str = "", nonce: str = "", echostr: str = ""):
     if verify_signature(signature, timestamp, nonce):

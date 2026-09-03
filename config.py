@@ -13,7 +13,7 @@ WECHAT_TOKEN = _required("WECHAT_TOKEN")
 # 管理密码仅来自环境变量（逗号分隔可配多个），代码与仓库中不得出现明文密码
 ADMIN_PASSWORDS = {p.strip() for p in _required("ADMIN_PASSWORD").split(",") if p.strip()}
 WEBSITE_URL = os.environ.get("WEBSITE_URL", "https://newapi.liubaitech.cn")
-GROUP_WECHAT_ID = "810466205"  # 微信群：添加此微信号
+GROUP_WECHAT_ID = os.environ.get("GROUP_WECHAT_ID", "")  # 微信群入口微信号，空则用后台设置
 
 # ----------------- 防暴力破解配置 -----------------
 MAX_FAILED_ATTEMPTS = 5
