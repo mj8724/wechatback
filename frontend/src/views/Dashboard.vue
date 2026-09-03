@@ -111,6 +111,35 @@
         </div>
       </div>
 
+      <!-- 用户模块 -->
+      <div v-show="active === 'users'">
+        <div class="bg-white rounded-xl shadow p-5 mt-4">
+          <h5 class="font-bold mb-1">👥 已领取用户 <span class="ml-2 text-xs font-normal text-gray-500">共 {{ usersTotal }} 人，一人一码</span></h5>
+          <p class="text-gray-500 text-xs mb-3">重置将收回该用户的激活码（回到待领取），其可重新领取</p>
+          <div class="mb-3">
+            <input v-model="userQuery" placeholder="搜索 OpenID / 激活码…"
+              class="w-full md:w-1/2 border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
+          </div>
+          <div class="max-h-[500px] overflow-y-auto">
+            <table class="w-full text-sm">
+              <thead><tr class="text-left text-gray-500"><th class="py-1">OpenID</th><th>激活码</th><th>领取时间</th><th>操作</th></tr></thead>
+              <tbody>
+                <tr v-if="!filteredUsers.length"><td colspan="4" class="text-center text-gray-400 py-6">无匹配数据</td></tr>
+                <tr v-for="u in filteredUsers" :key="u.openid" class="border-t hover:bg-gray-50">
+                  <td class="py-1"><small><code>{{ u.openid }}</code></small></td>
+                  <td><code>{{ u.code }}</code></td>
+                  <td><small class="text-gray-500">{{ u.created_at || '-' }}</small></td>
+                  <td>
+                    <button @click="onResetUser(u.openid)"
+                      class="text-xs px-2 py-1 rounded bg-amber-100 text-amber-700 hover:bg-amber-200">重置</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
       <!-- 后台留言模块 -->
       <div v-show="active === 'messages'">
         <div class="bg-white rounded-xl shadow p-5 mt-4">
@@ -146,10 +175,13 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { clearToken, deleteCode, downloadCSV, fetchStats, importCodes, logout, resetCode } from '../api.js'
+import { clearToken, deleteCode, downloadCSV, fetchStats, importCodes, listUsers, logout, resetCode, resetUser } from '../api.js'
 
 const router = useRouter()
 const stats = ref({})
+const users = ref([])
+const usersTotal = ref(0)
+const userQuery = ref('')
 const importText = ref('')
 const importResult = ref(null)
 const codeQuery = ref('')
@@ -161,6 +193,7 @@ const active = ref('overview')
 const tabs = computed(() => [
   { key: 'overview', label: '📊 总览', badge: null },
   { key: 'codes', label: '🔑 激活码', badge: stats.value.unused ?? null },
+  { key: 'users', label: '👥 用户', badge: usersTotal.value || null },
   { key: 'messages', label: '📝 留言', badge: stats.value.messages_count ?? null },
 ])
 
@@ -171,6 +204,14 @@ const filteredCodes = computed(() => {
     if (!q) return true
     return (r.code || '').toLowerCase().includes(q) || (r.assigned_openid || '').toLowerCase().includes(q)
   })
+})
+
+const filteredUsers = computed(() => {
+  const q = userQuery.value.trim().toLowerCase()
+  if (!q) return users.value
+  return users.value.filter((u) =>
+    (u.openid || '').toLowerCase().includes(q) || (u.code || '').toLowerCase().includes(q)
+  )
 })
 
 const filteredMessages = computed(() => {
@@ -191,6 +232,9 @@ const statCards = computed(() => [
 async function load() {
   try {
     stats.value = await fetchStats()
+    const udata = await listUsers()
+    users.value = udata.users || []
+    usersTotal.value = udata.total ?? users.value.length
   } catch (e) {
     if (e.status === 401) router.push('/login')
     else error.value = e.detail || '加载失败'
@@ -255,6 +299,17 @@ function exportMessages() {
     ['ID', 'OpenID', '类型', '内容', '时间'],
     filteredMessages.value.map((m) => [m.id, m.openid, m.msg_type, m.content, m.created_at])
   )
+}
+
+async function onResetUser(openid) {
+  if (!confirm(`确定收回 ${openid} 的激活码吗？其可重新领取。`)) return
+  try {
+    const data = await resetUser(openid)
+    alert(data.message || '重置成功')
+    await load()
+  } catch (e) {
+    alert('重置失败：' + (e.detail || '未知错误'))
+  }
 }
 
 async function onLogout() {

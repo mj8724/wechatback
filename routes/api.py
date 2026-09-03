@@ -30,6 +30,11 @@ class DeleteRequest(BaseModel):
     code: str = ""
 
 
+class UserResetRequest(BaseModel):
+    pwd: str = ""
+    openid: str = ""
+
+
 @router.post("/api/login")
 def login(req: LoginRequest, request: Request):
     ip = get_client_ip(request)
@@ -170,3 +175,42 @@ def delete_code(req: DeleteRequest, request: Request):
     conn.commit()
     conn.close()
     return {"status": "success", "message": "已删除" + ("（原领取人绑定已解除）" if was_assigned else "" )}
+
+
+@router.get("/api/users")
+def list_users(request: Request, pwd: str = ""):
+    require_admin(request, pwd)
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) as total FROM users")
+    total = cursor.fetchone()["total"]
+    cursor.execute("SELECT openid, code, created_at FROM users ORDER BY id DESC LIMIT 500")
+    users = [dict(r) for r in cursor.fetchall()]
+    conn.close()
+    return {"status": "success", "total": total, "users": users}
+
+
+@router.post("/api/users/reset")
+def reset_user(req: UserResetRequest, request: Request):
+    require_admin(request, req.pwd)
+    openid = (req.openid or "").strip()
+    if not openid:
+        raise HTTPException(status_code=400, detail="OpenID 不能为空")
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT code FROM users WHERE openid = ?", (openid,))
+    row = cursor.fetchone()
+    if row is None:
+        conn.close()
+        raise HTTPException(status_code=404, detail="该用户尚未领取激活码")
+
+    code = row["code"]
+    cursor.execute(
+        "UPDATE codes SET status = 'unused', assigned_openid = NULL, assigned_at = NULL WHERE code = ?",
+        (code,)
+    )
+    cursor.execute("DELETE FROM users WHERE openid = ?", (openid,))
+    conn.commit()
+    conn.close()
+    return {"status": "success", "reset": True, "code": code, "message": f"已收回 {openid} 的激活码，其可重新领取"}

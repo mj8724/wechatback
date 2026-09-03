@@ -85,6 +85,23 @@ export async function deleteCode(code) {
   return data
 }
 
+export async function listUsers() {
+  const res = await req('/api/users')
+  if (!res.ok) throw { status: res.status, detail: '无权限访问' }
+  return res.json()
+}
+
+export async function resetUser(openid) {
+  const res = await req('/api/users/reset', {
+    method: 'POST',
+    body: JSON.stringify({ openid }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (res.status === 429) throw { status: 429, detail: data.detail }
+  if (!res.ok) throw { status: res.status, detail: data.detail || '重置失败' }
+  return data
+}
+
 export function downloadCSV(filename, headers, rows) {
   const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
   const csv = '\ufeff' + [headers, ...rows].map((r) => r.map(esc).join(',')).join('\n')
