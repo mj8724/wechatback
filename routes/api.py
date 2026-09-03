@@ -35,6 +35,26 @@ class UserResetRequest(BaseModel):
     openid: str = ""
 
 
+class UserBatchResetRequest(BaseModel):
+    pwd: str = ""
+    openids: List[str] = []
+
+
+def _reset_user_by_openid(cursor, openid: str):
+    """收回指定用户的激活码。返回 (ok, code)。"""
+    cursor.execute("SELECT code FROM users WHERE openid = ?", (openid,))
+    row = cursor.fetchone()
+    if row is None:
+        return False, ""
+    code = row["code"]
+    cursor.execute(
+        "UPDATE codes SET status = 'unused', assigned_openid = NULL, assigned_at = NULL WHERE code = ?",
+        (code,)
+    )
+    cursor.execute("DELETE FROM users WHERE openid = ?", (openid,))
+    return True, code
+
+
 @router.post("/api/login")
 def login(req: LoginRequest, request: Request):
     ip = get_client_ip(request)
@@ -199,18 +219,42 @@ def reset_user(req: UserResetRequest, request: Request):
 
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT code FROM users WHERE openid = ?", (openid,))
-    row = cursor.fetchone()
-    if row is None:
+    ok, code = _reset_user_by_openid(cursor, openid)
+    if not ok:
         conn.close()
         raise HTTPException(status_code=404, detail="该用户尚未领取激活码")
-
-    code = row["code"]
-    cursor.execute(
-        "UPDATE codes SET status = 'unused', assigned_openid = NULL, assigned_at = NULL WHERE code = ?",
-        (code,)
-    )
-    cursor.execute("DELETE FROM users WHERE openid = ?", (openid,))
     conn.commit()
     conn.close()
     return {"status": "success", "reset": True, "code": code, "message": f"已收回 {openid} 的激活码，其可重新领取"}
+
+
+@router.post("/api/users/reset-batch")
+def reset_users_batch(req: UserBatchResetRequest, request: Request):
+    require_admin(request, req.pwd)
+    openids = [o.strip() for o in (req.openids or []) if o and o.strip()]
+    if not openids:
+        raise HTTPException(status_code=400, detail="请选择要重置的用户")
+
+    conn = get_db()
+    cursor = conn.cursor()
+    reset, not_found = [], []
+    for openid in dict.fromkeys(openids):
+        ok, _ = _reset_user_by_openid(cursor, openid)
+        (reset if ok else not_found).append(openid)
+    conn.commit()
+    conn.close()
+    return {"status": "success", "reset": reset, "not_found": not_found,
+            "message": f"已重置 {len(reset)} 人" + (f"，{len(not_found)} 人无码可收" if not_found else "")}
+
+
+@router.post("/api/codes/delete-unused")
+def delete_unused_codes(request: Request, pwd: str = ""):
+    require_admin(request, pwd)
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) as n FROM codes WHERE status = 'unused'")
+    n = cursor.fetchone()["n"]
+    cursor.execute("DELETE FROM codes WHERE status = 'unused'")
+    conn.commit()
+    conn.close()
+    return {"status": "success", "deleted": n, "message": f"已清空 {n} 个未使用激活码"}

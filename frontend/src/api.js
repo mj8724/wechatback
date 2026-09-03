@@ -102,6 +102,25 @@ export async function resetUser(openid) {
   return data
 }
 
+export async function resetUsers(openids) {
+  const res = await req('/api/users/reset-batch', {
+    method: 'POST',
+    body: JSON.stringify({ openids }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (res.status === 429) throw { status: 429, detail: data.detail }
+  if (!res.ok) throw { status: res.status, detail: data.detail || '批量重置失败' }
+  return data
+}
+
+export async function deleteUnusedCodes() {
+  const res = await req('/api/codes/delete-unused', { method: 'POST' })
+  const data = await res.json().catch(() => ({}))
+  if (res.status === 429) throw { status: 429, detail: data.detail }
+  if (!res.ok) throw { status: res.status, detail: data.detail || '清空失败' }
+  return data
+}
+
 export function downloadCSV(filename, headers, rows) {
   const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`
   const csv = '\ufeff' + [headers, ...rows].map((r) => r.map(esc).join(',')).join('\n')

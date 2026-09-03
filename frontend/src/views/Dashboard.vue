@@ -82,6 +82,9 @@
             <button @click="exportCodes" class="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-bold">
               导出 CSV
             </button>
+            <button @click="onClearUnused" class="px-4 py-2 rounded-lg bg-red-500 hover:bg-red-600 text-white text-sm font-bold">
+              清空未使用({{ stats.unused ?? 0 }})
+            </button>
           </div>
           <div class="max-h-[500px] overflow-y-auto">
             <table class="w-full text-sm">
@@ -116,16 +119,25 @@
         <div class="bg-white rounded-xl shadow p-5 mt-4">
           <h5 class="font-bold mb-1">👥 已领取用户 <span class="ml-2 text-xs font-normal text-gray-500">共 {{ usersTotal }} 人，一人一码</span></h5>
           <p class="text-gray-500 text-xs mb-3">重置将收回该用户的激活码（回到待领取），其可重新领取</p>
-          <div class="mb-3">
+          <div class="mb-3 flex flex-col md:flex-row gap-2">
             <input v-model="userQuery" placeholder="搜索 OpenID / 激活码…"
-              class="w-full md:w-1/2 border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
+              class="flex-1 border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500" />
+            <button @click="onBatchReset" :disabled="!selectedUsers.length"
+              class="px-4 py-2 rounded-lg text-white text-sm font-bold"
+              :class="selectedUsers.length ? 'bg-amber-500 hover:bg-amber-600' : 'bg-gray-300 cursor-not-allowed'">
+              批量重置({{ selectedUsers.length }})
+            </button>
           </div>
           <div class="max-h-[500px] overflow-y-auto">
             <table class="w-full text-sm">
-              <thead><tr class="text-left text-gray-500"><th class="py-1">OpenID</th><th>激活码</th><th>领取时间</th><th>操作</th></tr></thead>
+              <thead><tr class="text-left text-gray-500">
+                <th class="py-1 pr-2"><input type="checkbox" :checked="allSelected" @change="toggleAll" /></th>
+                <th>OpenID</th><th>激活码</th><th>领取时间</th><th>操作</th>
+              </tr></thead>
               <tbody>
-                <tr v-if="!filteredUsers.length"><td colspan="4" class="text-center text-gray-400 py-6">无匹配数据</td></tr>
+                <tr v-if="!filteredUsers.length"><td colspan="5" class="text-center text-gray-400 py-6">无匹配数据</td></tr>
                 <tr v-for="u in filteredUsers" :key="u.openid" class="border-t hover:bg-gray-50">
+                  <td class="py-1 pr-2"><input type="checkbox" :value="u.openid" v-model="selectedUsers" /></td>
                   <td class="py-1"><small><code>{{ u.openid }}</code></small></td>
                   <td><code>{{ u.code }}</code></td>
                   <td><small class="text-gray-500">{{ u.created_at || '-' }}</small></td>
@@ -175,13 +187,14 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { clearToken, deleteCode, downloadCSV, fetchStats, importCodes, listUsers, logout, resetCode, resetUser } from '../api.js'
+import { clearToken, deleteCode, deleteUnusedCodes, downloadCSV, fetchStats, importCodes, listUsers, logout, resetCode, resetUser, resetUsers } from '../api.js'
 
 const router = useRouter()
 const stats = ref({})
 const users = ref([])
 const usersTotal = ref(0)
 const userQuery = ref('')
+const selectedUsers = ref([])
 const importText = ref('')
 const importResult = ref(null)
 const codeQuery = ref('')
@@ -213,6 +226,19 @@ const filteredUsers = computed(() => {
     (u.openid || '').toLowerCase().includes(q) || (u.code || '').toLowerCase().includes(q)
   )
 })
+
+const allSelected = computed(() => filteredUsers.value.length > 0 && filteredUsers.value.every((u) => selectedUsers.value.includes(u.openid)))
+
+function toggleAll() {
+  if (allSelected.value) {
+    const vis = new Set(filteredUsers.value.map((u) => u.openid))
+    selectedUsers.value = selectedUsers.value.filter((o) => !vis.has(o))
+  } else {
+    const cur = new Set(selectedUsers.value)
+    filteredUsers.value.forEach((u) => cur.add(u.openid))
+    selectedUsers.value = [...cur]
+  }
+}
 
 const filteredMessages = computed(() => {
   const q = msgQuery.value.trim().toLowerCase()
@@ -306,9 +332,36 @@ async function onResetUser(openid) {
   try {
     const data = await resetUser(openid)
     alert(data.message || '重置成功')
+    selectedUsers.value = selectedUsers.value.filter((o) => o !== openid)
     await load()
   } catch (e) {
     alert('重置失败：' + (e.detail || '未知错误'))
+  }
+}
+
+async function onBatchReset() {
+  if (!selectedUsers.value.length) return
+  if (!confirm(`确定批量收回 ${selectedUsers.value.length} 位用户的激活码吗？他们可重新领取。`)) return
+  try {
+    const data = await resetUsers(selectedUsers.value)
+    alert(data.message || '批量重置成功')
+    selectedUsers.value = []
+    await load()
+  } catch (e) {
+    alert('批量重置失败：' + (e.detail || '未知错误'))
+  }
+}
+
+async function onClearUnused() {
+  const n = stats.value.unused ?? 0
+  if (!n) { alert('没有未使用的激活码'); return }
+  if (!confirm(`确定删除全部 ${n} 个未使用激活码吗？此操作不可恢复。`)) return
+  try {
+    const data = await deleteUnusedCodes()
+    alert(data.message || '清空成功')
+    await load()
+  } catch (e) {
+    alert('清空失败：' + (e.detail || '未知错误'))
   }
 }
 
