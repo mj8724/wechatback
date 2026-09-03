@@ -7,7 +7,9 @@ const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/login', component: Login },
+    { path: '/admin', redirect: '/' },
     { path: '/', component: Dashboard },
+    { path: '/:pathMatch(.*)*', redirect: '/' },
   ],
 })
 
