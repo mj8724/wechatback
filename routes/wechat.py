@@ -7,8 +7,9 @@ import xml.etree.ElementTree as ET
 from fastapi import APIRouter, Request, Response
 
 import config
+import core.config_store as cs
 from core.security import check_openid_throttle, check_wechat_throttle, get_client_ip
-from core.wechat import build_reply_xml, decide_reply, save_message
+from core.wechat import build_reply_xml, decide_reply, save_message, update_user_event
 
 logger = logging.getLogger("wechat")
 
@@ -20,13 +21,17 @@ SUCCESS = Response(content="success", media_type="text/plain")
 def verify_signature(signature: str, timestamp: str, nonce: str) -> bool:
     if not signature or not timestamp or not nonce:
         return False
+    current_token = cs.get_wechat_token()
+    if not current_token:
+        logger.warning("WeChat Token not configured in env or database")
+        return False
     try:
         ts = int(timestamp)
     except ValueError:
         return False
     if abs(time.time() - ts) > config.WECHAT_TS_WINDOW:
         return False
-    items = [config.WECHAT_TOKEN, timestamp, nonce]
+    items = [current_token, timestamp, nonce]
     items.sort()
     sha1 = hashlib.sha1("".join(items).encode("utf-8")).hexdigest()
     return hmac.compare_digest(sha1, signature)
@@ -44,6 +49,8 @@ def healthz():
 
 @router.get("/wechat")
 def verify_wechat(signature: str = "", timestamp: str = "", nonce: str = "", echostr: str = ""):
+    if not cs.is_wechat_configured():
+        return Response(content="WeChat Token Not Configured. Please configure in Admin Dashboard.", status_code=403)
     if verify_signature(signature, timestamp, nonce):
         return Response(content=echostr, media_type="text/plain")
     return Response(content="Invalid Signature", status_code=403)
@@ -81,12 +88,20 @@ async def handle_wechat_msg(
         logger.info("wechat openid throttled")
         return SUCCESS
 
-    # 所有消息一律先持久化记录
-    save_message(from_user, msg_type, content or f"[{event}]" if msg_type == "event" else content)
+    # 事件关注/取关状态跟踪
+    if msg_type == "event":
+        if event in ["subscribe", "scan"]:
+            update_user_event(from_user, "subscribe")
+        elif event == "unsubscribe":
+            update_user_event(from_user, "unsubscribe")
 
     reply_content = decide_reply(msg_type, event, content, from_user)
 
+    # 消息与回复闭环持久化记录
+    msg_body = content or (f"[{event}]" if msg_type == "event" else content)
+    save_message(from_user, msg_type, msg_body, reply_content or "")
+
     if reply_content is not None:
-        return Response(content=build_reply_xml(from_user, to_user, reply_content), media_type="application/xml")
+        return Response(content=build_reply_xml(from_user, to_user, reply_content), media_type="application/xml; charset=utf-8")
 
     return SUCCESS

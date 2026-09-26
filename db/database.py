@@ -29,9 +29,21 @@ def init_db():
         conn.execute("PRAGMA busy_timeout=30000")
         cursor = conn.cursor()
         cursor.execute("""
+        CREATE TABLE IF NOT EXISTS code_pools (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            key TEXT UNIQUE NOT NULL,
+            description TEXT DEFAULT '',
+            is_default INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_code_pool_key ON code_pools(key)")
+        cursor.execute("""
         CREATE TABLE IF NOT EXISTS codes (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             code TEXT UNIQUE NOT NULL,
+            pool_id INTEGER DEFAULT 1,
             status TEXT DEFAULT 'unused',
             assigned_openid TEXT,
             assigned_at DATETIME,
@@ -39,10 +51,24 @@ def init_db():
         )
         """)
         cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_code_claims (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            openid TEXT NOT NULL,
+            rule_id INTEGER DEFAULT 0,
+            pool_id INTEGER NOT NULL,
+            code TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_openid ON user_code_claims(openid)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_rule ON user_code_claims(openid, rule_id)")
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_claim_unique_code ON user_code_claims(code)")
+        cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             openid TEXT UNIQUE NOT NULL,
             code TEXT NOT NULL,
+            last_event TEXT DEFAULT 'subscribe',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """)
@@ -52,6 +78,7 @@ def init_db():
             openid TEXT NOT NULL,
             msg_type TEXT DEFAULT 'text',
             content TEXT,
+            reply_content TEXT DEFAULT '',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """)
@@ -76,6 +103,7 @@ def init_db():
             content TEXT DEFAULT '',
             priority INTEGER DEFAULT 100,
             enabled INTEGER DEFAULT 1,
+            recipe TEXT DEFAULT '',
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
         """)
@@ -100,11 +128,80 @@ def _migrate(cursor):
     except Exception:
         pass
     try:
+        user_cols = [r[1] for r in cursor.execute("PRAGMA table_info(users)").fetchall()]
+        if "last_event" not in user_cols:
+            cursor.execute("ALTER TABLE users ADD COLUMN last_event TEXT DEFAULT 'subscribe'")
+    except Exception:
+        pass
+    try:
+        msg_cols = [r[1] for r in cursor.execute("PRAGMA table_info(messages)").fetchall()]
+        if "reply_content" not in msg_cols:
+            cursor.execute("ALTER TABLE messages ADD COLUMN reply_content TEXT DEFAULT ''")
+    except Exception:
+        pass
+    try:
         cursor.execute(
             "SELECT code FROM users GROUP BY code HAVING COUNT(*) > 1 LIMIT 1"
         )
         if cursor.fetchone() is None:
             cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_user_code ON users(code)")
+    except Exception:
+        pass
+    try:
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS code_pools (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            key TEXT UNIQUE NOT NULL,
+            description TEXT DEFAULT '',
+            is_default INTEGER DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_code_pool_key ON code_pools(key)")
+        cursor.execute("INSERT OR IGNORE INTO code_pools (id, name, key, description, is_default) VALUES (1, '默认卡券池', 'default', '系统初始卡券池', 1)")
+        pool_cols = [r[1] for r in cursor.execute("PRAGMA table_info(code_pools)").fetchall()]
+        if "is_default" not in pool_cols:
+            cursor.execute("ALTER TABLE code_pools ADD COLUMN is_default INTEGER DEFAULT 0")
+            cursor.execute("UPDATE code_pools SET is_default = 1 WHERE id = 1")
+    except Exception:
+        pass
+    try:
+        code_cols = [r[1] for r in cursor.execute("PRAGMA table_info(codes)").fetchall()]
+        if "pool_id" not in code_cols:
+            cursor.execute("ALTER TABLE codes ADD COLUMN pool_id INTEGER DEFAULT 1")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_code_pool ON codes(pool_id)")
+        cursor.execute("UPDATE codes SET pool_id = 1 WHERE pool_id IS NULL")
+    except Exception:
+        pass
+    try:
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_code_claims (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            openid TEXT NOT NULL,
+            rule_id INTEGER DEFAULT 0,
+            pool_id INTEGER NOT NULL,
+            code TEXT NOT NULL,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_openid ON user_code_claims(openid)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_rule ON user_code_claims(openid, rule_id)")
+        cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_claim_unique_code ON user_code_claims(code)")
+        cursor.execute("""
+        INSERT INTO user_code_claims (openid, rule_id, pool_id, code, created_at)
+        SELECT u.openid, 0, 1, u.code, u.created_at
+        FROM users u
+        WHERE NOT EXISTS (
+            SELECT 1 FROM user_code_claims ucc WHERE ucc.code = u.code
+        )
+        """)
+    except Exception:
+        pass
+    try:
+        rule_cols = [r[1] for r in cursor.execute("PRAGMA table_info(keyword_rules)").fetchall()]
+        if "recipe" not in rule_cols:
+            cursor.execute("ALTER TABLE keyword_rules ADD COLUMN recipe TEXT DEFAULT ''")
     except Exception:
         pass
 

@@ -12,3 +12,16 @@ venv/
 .worktrees/
 frontend/dist/
 frontend/node_modules/
+
+# Environment & Sessions
+.venv-host/
+.pi/
+*.html
+!frontend/**/*.html
+
+# Workflow Runtime Caches
+.workflow/search-cache.json
+.workflow/search-daemon.json
+.workflow/wiki-index*
+.workflow/kg/
+

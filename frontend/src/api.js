@@ -50,17 +50,20 @@ export async function fetchStats() {
   return res.json()
 }
 
-export async function importCodes(codes) {
+export async function importCodes(param) {
+  // 支持传入数组 codes 或对象 { pool_id, codes, multi_pool_codes }
+  const body = Array.isArray(param) ? { codes: param } : param
   const res = await req('/api/import', {
     method: 'POST',
-    body: JSON.stringify({ codes }),
+    body: JSON.stringify(body),
   })
   if (res.status === 429) {
     const err = await res.json()
     throw { status: 429, detail: err.detail }
   }
-  if (!res.ok) throw { status: res.status, detail: '导入失败' }
-  return res.json()
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw { status: res.status, detail: data.detail || '导入失败' }
+  return data
 }
 
 export async function resetCode(code) {
@@ -163,11 +166,116 @@ export async function resetUsers(openids) {
   return data
 }
 
-export async function deleteUnusedCodes() {
-  const res = await req('/api/codes/delete-unused', { method: 'POST' })
+export async function deleteUnusedCodes(pool_id = null) {
+  const url = pool_id ? `/api/codes/delete-unused?pool_id=${pool_id}` : '/api/codes/delete-unused'
+  const res = await req(url, { method: 'POST' })
   const data = await res.json().catch(() => ({}))
   if (res.status === 429) throw { status: 429, detail: data.detail }
   if (!res.ok) throw { status: res.status, detail: data.detail || '清空失败' }
+  return data
+}
+
+export async function listPools() {
+  const res = await req('/api/pools')
+  if (!res.ok) throw { status: res.status, detail: '无权限访问' }
+  return res.json()
+}
+
+export async function createPool(data) {
+  const res = await req('/api/pools', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+  const resData = await res.json().catch(() => ({}))
+  if (!res.ok) throw { status: res.status, detail: resData.detail || '创建品类失败' }
+  return resData
+}
+
+export async function updatePool(id, data) {
+  const res = await req(`/api/pools/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  })
+  const resData = await res.json().catch(() => ({}))
+  if (!res.ok) throw { status: res.status, detail: resData.detail || '修改品类失败' }
+  return resData
+}
+
+export async function setDefaultPool(id) {
+  const res = await req(`/api/pools/${id}/set-default`, { method: 'POST' })
+  const resData = await res.json().catch(() => ({}))
+  if (!res.ok) throw { status: res.status, detail: resData.detail || '设置主池失败' }
+  return resData
+}
+
+export async function deletePool(id) {
+  const res = await req(`/api/pools/${id}`, { method: 'DELETE' })
+  const resData = await res.json().catch(() => ({}))
+  if (!res.ok) throw { status: res.status, detail: resData.detail || '删除品类失败' }
+  return resData
+}
+
+export async function batchDeleteRules(ids) {
+  const res = await req('/api/rules/batch-delete', {
+    method: 'POST',
+    body: JSON.stringify({ ids }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw { status: res.status, detail: data.detail || '批量删除失败' }
+  return data
+}
+
+export async function batchToggleRules(ids, enabled) {
+  const res = await req('/api/rules/batch-toggle', {
+    method: 'POST',
+    body: JSON.stringify({ ids, enabled }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw { status: res.status, detail: data.detail || '批量操作失败' }
+  return data
+}
+
+export async function batchImportRules(rules, mode = 'skip') {
+  const res = await req('/api/rules/batch-import', {
+    method: 'POST',
+    body: JSON.stringify({ rules, mode }),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw { status: res.status, detail: data.detail || '批量导入失败' }
+  return data
+}
+
+export async function getSetupStatus() {
+  const res = await fetch('/api/setup/status')
+  if (!res.ok) return { setup_done: true, wechat_configured: false }
+  return res.json()
+}
+
+export async function setupInitial(payload) {
+  const res = await fetch('/api/setup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw { status: res.status, detail: data.detail || '初始化失败' }
+  if (data.token) setToken(data.token)
+  return data
+}
+
+export async function getConfig() {
+  const res = await req('/api/config')
+  if (!res.ok) throw { status: res.status, detail: '无权限访问' }
+  return res.json()
+}
+
+export async function saveConfig(payload) {
+  const res = await req('/api/config', {
+    method: 'PUT',
+    body: JSON.stringify(payload),
+  })
+  const data = await res.json().catch(() => ({}))
+  if (!res.ok) throw { status: res.status, detail: data.detail || '保存配置失败' }
   return data
 }
 

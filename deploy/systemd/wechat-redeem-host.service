@@ -1,0 +1,19 @@
+[Unit]
+Description=WeChat Redeem Hub (Host Fallback Service)
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/wechat-redeem
+ExecStart=/opt/wechat-redeem/run-host.sh
+Restart=always
+RestartSec=3
+Environment=PYTHONUNBUFFERED=1
+
+# 资源与文件限制
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

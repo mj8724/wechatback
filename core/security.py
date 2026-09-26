@@ -100,4 +100,5 @@ def escape_like(s: str) -> str:
 def is_valid_pwd(pwd: str) -> bool:
     if not pwd:
         return False
-    return _canon(pwd) in config.ADMIN_PASSWORDS
+    from core.config_store import verify_admin_password
+    return verify_admin_password(pwd)

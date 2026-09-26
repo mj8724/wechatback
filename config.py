@@ -1,19 +1,48 @@
 import os
 
 
-def _required(name: str) -> str:
-    val = os.environ.get(name, "").strip()
-    if not val:
-        raise RuntimeError(f"缺少必需环境变量 {name}，请复制 .env.example 为 .env 并填写后启动")
-    return val
+import hashlib
+import hmac
+import os
+import secrets
 
+_env_db = os.environ.get("DB_PATH", "").strip()
+if _env_db:
+    DB_PATH = _env_db
+else:
+    # 宿主机非 root 环境下 /data 通常不可写，自动回退到项目本地 data 目录
+    _base_dir = os.path.dirname(os.path.abspath(__file__))
+    try:
+        if os.path.exists("/data") and os.access("/data", os.W_OK):
+            DB_PATH = "/data/wechat_redeem.db"
+        else:
+            DB_PATH = os.path.join(_base_dir, "data", "wechat_redeem.db")
+    except Exception:
+        DB_PATH = os.path.join(_base_dir, "data", "wechat_redeem.db")
 
-DB_PATH = os.environ.get("DB_PATH", "/data/wechat_redeem.db")
-WECHAT_TOKEN = _required("WECHAT_TOKEN")
-# 管理密码仅来自环境变量（逗号分隔可配多个），全角！归一为半角后比对
-ADMIN_PASSWORDS = {p.strip().replace("！", "!") for p in _required("ADMIN_PASSWORD").split(",") if p.strip()}
-WEBSITE_URL = os.environ.get("WEBSITE_URL", "https://newapi.liubaitech.cn")
-GROUP_WECHAT_ID = os.environ.get("GROUP_WECHAT_ID", "")  # 微信群入口微信号，空则用后台设置
+# 占位符常量：若环境变量为这些默认占位符，视作未配置
+PLACEHOLDER_TOKENS = {"your-wechat-token-here", "wechat-token-here", "change-me"}
+PLACEHOLDER_PASSWORDS = {"change-me", "your-password-here", "admin"}
+PLACEHOLDER_WEBSITE_URLS = {"https://example.com", "http://example.com"}
+
+# 环境变量原始读取（允许缺失，缺失时不阻断启动）
+_env_token = os.environ.get("WECHAT_TOKEN", "").strip()
+ENV_WECHAT_TOKEN = "" if _env_token in PLACEHOLDER_TOKENS else _env_token
+WECHAT_TOKEN = ENV_WECHAT_TOKEN  # 兼容现有静态引用
+
+_env_pwd = os.environ.get("ADMIN_PASSWORD", "").strip()
+ADMIN_PASSWORDS = {
+    p.strip().replace("！", "!")
+    for p in _env_pwd.split(",")
+    if p.strip() and p.strip() not in PLACEHOLDER_PASSWORDS
+}
+
+_env_website = os.environ.get("WEBSITE_URL", "").strip()
+DEFAULT_WEBSITE_URL = "https://newapi.liubaitech.cn"
+ENV_WEBSITE_URL = "" if _env_website in PLACEHOLDER_WEBSITE_URLS else _env_website
+WEBSITE_URL = ENV_WEBSITE_URL or DEFAULT_WEBSITE_URL
+
+GROUP_WECHAT_ID = os.environ.get("GROUP_WECHAT_ID", "").strip()
 
 # ----------------- 防暴力破解配置 -----------------
 MAX_FAILED_ATTEMPTS = 5
@@ -28,3 +57,33 @@ WECHAT_TS_WINDOW = 600
 WECHAT_RATE_PER_MIN = 150
 # 每 OpenID 每分钟允许的 /wechat 请求数（细粒度防刷）
 WECHAT_RATE_PER_OPENID = 10
+
+# ----------------- 密码哈希纯函数 (PBKDF2-HMAC-SHA256) -----------------
+PBKDF2_ITERATIONS = 200_000
+
+
+def hash_password(password: str) -> str:
+    """计算密码的 PBKDF2-HMAC-SHA256 哈希值（200,000次迭代）。"""
+    salt = secrets.token_hex(16)
+    canon = (password or "").strip().replace("！", "!")
+    key = hashlib.pbkdf2_hmac("sha256", canon.encode("utf-8"), salt.encode("utf-8"), PBKDF2_ITERATIONS)
+    return f"pbkdf2_sha256${PBKDF2_ITERATIONS}${salt}${key.hex()}"
+
+
+def verify_password_hash(password: str, stored_hash: str) -> bool:
+    """校验密码是否匹配存储的哈希字符串。"""
+    if not password or not stored_hash:
+        return False
+    parts = stored_hash.split("$")
+    if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
+        return False
+    try:
+        iterations = int(parts[1])
+        salt = parts[2]
+        expected_hex = parts[3]
+        canon = password.strip().replace("！", "!")
+        key = hashlib.pbkdf2_hmac("sha256", canon.encode("utf-8"), salt.encode("utf-8"), iterations)
+        return hmac.compare_digest(key.hex(), expected_hex)
+    except Exception:
+        return False
+
