@@ -5,6 +5,9 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/mj8724/wechatback/actions/workflows/ci.yml">
+    <img src="https://github.com/mj8724/wechatback/actions/workflows/ci.yml/badge.svg" alt="CI">
+  </a>
   <img src="https://img.shields.io/badge/Python-3.11+-3776AB?style=flat&logo=python&logoColor=white" alt="Python">
   <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?style=flat&logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Vue-3.5+-4FC08D?style=flat&logo=vuedotjs&logoColor=white" alt="Vue 3">
