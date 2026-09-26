@@ -366,10 +366,225 @@ assert res_new.status_code == 200
 assert res_new.text == "hot_reload_success"
 print("  -> Token hot reload regression verified OK")
 
+# ==========================================
+# E2E-11: 全局自定义变量 CRUD 与富模板动态注入验证
+# ==========================================
+print("\n[E2E-11] Testing Custom Variables CRUD & Dynamic Placeholder Injection...")
+vars_res = requests.get(f"{BASE_URL}/api/variables", headers=headers)
+assert vars_res.status_code == 200
+existing_vars = {v["key"]: v["value"] for v in vars_res.json()["variables"]}
+assert "site" in existing_vars and "group" in existing_vars
+
+# 添加自定义变量 notice
+post_var = requests.post(f"{BASE_URL}/api/variables", json={
+    "key": "notice",
+    "value": "国庆狂欢全场8折",
+    "description": "活动通告"
+}, headers=headers)
+assert post_var.status_code == 200
+notice_id = post_var.json()["id"]
+
+# 创建引用 {notice} 的普通规则
+res_var_rule = requests.post(f"{BASE_URL}/api/rules", json={
+    "keyword": "查通告",
+    "mode": "contains",
+    "action": "none",
+    "content": "最新通报：{notice}，官网：{site}"
+}, headers=headers)
+assert res_var_rule.status_code == 200
+
+# 触发微信消息验证变量注入
+xml_req_var = """<xml>
+<ToUserName><![CDATA[gh_test]]></ToUserName>
+<FromUserName><![CDATA[fan_david]]></FromUserName>
+<CreateTime>12345695</CreateTime>
+<MsgType><![CDATA[text]]></MsgType>
+<Content><![CDATA[请帮我查通告]]></Content>
+</xml>"""
+res_wx_var = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_req_var.encode("utf-8"))
+assert res_wx_var.status_code == 200
+var_reply = ET.fromstring(res_wx_var.content.decode("utf-8")).findtext("Content") or ""
+assert "国庆狂欢全场8折" in var_reply
+assert "https://init.example.com" in var_reply
+
+# 更新变量为新值并二次验证即时生效
+put_var = requests.put(f"{BASE_URL}/api/variables/{notice_id}", json={
+    "value": "元旦大促开年大吉",
+    "description": "更新活动"
+}, headers=headers)
+assert put_var.status_code == 200
+res_wx_var2 = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_req_var.encode("utf-8"))
+var_reply2 = ET.fromstring(res_wx_var2.content.decode("utf-8")).findtext("Content") or ""
+assert "元旦大促开年大吉" in var_reply2
+
+# 验证核心系统变量 site/group 禁止删除
+del_site_res = requests.delete(f"{BASE_URL}/api/variables/1", headers=headers)
+assert del_site_res.status_code == 400
+assert "禁止删除" in del_site_res.text
+
+# 成功删除自定义变量 notice
+del_var_res = requests.delete(f"{BASE_URL}/api/variables/{notice_id}", headers=headers)
+assert del_var_res.status_code == 200
+print("  -> Custom variables CRUD, dynamic placeholder rendering, and protection verified OK")
+
+# ==========================================
+# E2E-12: 正则表达式匹配规则验证
+# ==========================================
+print("\n[E2E-12] Testing Regex Keyword Matching Rule...")
+res_regex_rule = requests.post(f"{BASE_URL}/api/rules", json={
+    "keyword": r"^(领|求)?福利\d*$",
+    "mode": "regex",
+    "action": "none",
+    "content": "恭喜命中正则福利规则！"
+}, headers=headers)
+assert res_regex_rule.status_code == 200
+
+# 命中测试 1: '福利'
+xml_reg_1 = """<xml><ToUserName><![CDATA[gh_test]]></ToUserName><FromUserName><![CDATA[fan_u1]]></FromUserName><CreateTime>12345696</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[福利]]></Content></xml>"""
+r1 = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_reg_1.encode("utf-8"))
+assert "恭喜命中正则福利规则！" in (ET.fromstring(r1.content.decode("utf-8")).findtext("Content") or "")
+
+# 命中测试 2: '求福利888'
+xml_reg_2 = """<xml><ToUserName><![CDATA[gh_test]]></ToUserName><FromUserName><![CDATA[fan_u2]]></FromUserName><CreateTime>12345697</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[求福利888]]></Content></xml>"""
+r2 = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_reg_2.encode("utf-8"))
+assert "恭喜命中正则福利规则！" in (ET.fromstring(r2.content.decode("utf-8")).findtext("Content") or "")
+
+# 不命中测试: '我不想领福利啊'
+xml_reg_3 = """<xml><ToUserName><![CDATA[gh_test]]></ToUserName><FromUserName><![CDATA[fan_u3]]></FromUserName><CreateTime>12345698</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[我不想领福利啊]]></Content></xml>"""
+r3 = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_reg_3.encode("utf-8"))
+assert "恭喜命中正则福利规则！" not in (ET.fromstring(r3.content.decode("utf-8")).findtext("Content") or "")
+print("  -> Regex keyword pattern matching verified OK")
+
+# ==========================================
+# E2E-13: 发码三态独立分支文案验证（首次成功/重复领码/缺货告罄）
+# ==========================================
+print("\n[E2E-13] Testing 3-Status Code Dispatch Branches (New, Repeat, Empty)...")
+# 创建新品类 promo 并导入仅 1 张码
+p_promo = requests.post(f"{BASE_URL}/api/pools", json={"name": "限时特惠", "key": "promo"}, headers=headers).json()
+promo_pool_id = p_promo["id"]
+requests.post(f"{BASE_URL}/api/import", json={"pool_id": promo_pool_id, "codes": ["PROMO-ONLY-ONE"]}, headers=headers)
+
+# 创建带有完整三态文案的发码规则
+res_branch_rule = requests.post(f"{BASE_URL}/api/rules", json={
+    "keyword": "特惠卡",
+    "mode": "contains",
+    "action": "code",
+    "recipe": json.dumps([{"pool_id": promo_pool_id, "key": "promo", "count": 1}]),
+    "status_replies": {
+        "new": "【首发成功】恭喜拿到特惠码：{code}",
+        "repeat": "【已领提醒】您之前已领过：{code}，请勿贪杯！",
+        "empty": "【缺货告罄】来晚啦，本轮特惠码已全部领完！"
+    }
+}, headers=headers)
+assert res_branch_rule.status_code == 200
+
+# 用户 Bob 首次领取 -> 命中 new 分支
+xml_bob_1 = """<xml><ToUserName><![CDATA[gh_test]]></ToUserName><FromUserName><![CDATA[fan_bob]]></FromUserName><CreateTime>12345699</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[我要领特惠卡]]></Content></xml>"""
+res_bob_1 = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_bob_1.encode("utf-8"))
+reply_bob_1 = ET.fromstring(res_bob_1.content.decode("utf-8")).findtext("Content") or ""
+assert "【首发成功】恭喜拿到特惠码：PROMO-ONLY-ONE" in reply_bob_1
+
+# 用户 Bob 二次领取 -> 命中 repeat 分支
+res_bob_2 = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_bob_1.encode("utf-8"))
+reply_bob_2 = ET.fromstring(res_bob_2.content.decode("utf-8")).findtext("Content") or ""
+assert "【已领提醒】您之前已领过：PROMO-ONLY-ONE，请勿贪杯！" in reply_bob_2
+
+# 用户 Charlie 新用户来领 -> 库存已为 0，命中 empty 分支
+xml_charlie = """<xml><ToUserName><![CDATA[gh_test]]></ToUserName><FromUserName><![CDATA[fan_charlie]]></FromUserName><CreateTime>12345700</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[我要领特惠卡]]></Content></xml>"""
+res_charlie = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_charlie.encode("utf-8"))
+reply_charlie = ET.fromstring(res_charlie.content.decode("utf-8")).findtext("Content") or ""
+assert "【缺货告罄】来晚啦，本轮特惠码已全部领完！" in reply_charlie
+print("  -> Independent 3-status branches (new/repeat/empty) verified OK")
+
+# ==========================================
+# E2E-14: 活动领取有效时间限制拦截验证
+# ==========================================
+print("\n[E2E-14] Testing Activity Time Limit Windows (Not started / Expired)...")
+# 1. 测试未开始规则 (start_time 为 2099 年)
+rule_future = requests.post(f"{BASE_URL}/api/rules", json={
+    "keyword": "未来活动",
+    "mode": "contains",
+    "action": "code",
+    "start_time": "2099-01-01 00:00:00",
+    "status_replies": {
+        "new": "成功领到未来码",
+        "not_started": "抱歉，该活动将在2099年开启，敬请期待！"
+    }
+}, headers=headers)
+assert rule_future.status_code == 200
+
+xml_time_1 = """<xml><ToUserName><![CDATA[gh_test]]></ToUserName><FromUserName><![CDATA[fan_tim]]></FromUserName><CreateTime>12345701</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[参加未来活动]]></Content></xml>"""
+res_time_1 = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_time_1.encode("utf-8"))
+reply_time_1 = ET.fromstring(res_time_1.content.decode("utf-8")).findtext("Content") or ""
+assert "抱歉，该活动将在2099年开启，敬请期待！" in reply_time_1
+
+# 2. 测试已结束规则 (end_time 为 2020 年)
+rule_past = requests.post(f"{BASE_URL}/api/rules", json={
+    "keyword": "过去活动",
+    "mode": "contains",
+    "action": "code",
+    "start_time": "2020-01-01 00:00:00",
+    "end_time": "2020-01-02 00:00:00",
+    "status_replies": {
+        "new": "成功领到过去码",
+        "expired": "本次活动已圆满闭幕，感谢关注！"
+    }
+}, headers=headers)
+assert rule_past.status_code == 200
+
+xml_time_2 = """<xml><ToUserName><![CDATA[gh_test]]></ToUserName><FromUserName><![CDATA[fan_tim]]></FromUserName><CreateTime>12345702</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[参加过去活动]]></Content></xml>"""
+res_time_2 = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_time_2.encode("utf-8"))
+reply_time_2 = ET.fromstring(res_time_2.content.decode("utf-8")).findtext("Content") or ""
+assert "本次活动已圆满闭幕，感谢关注！" in reply_time_2
+print("  -> Activity time limit window checks (not_started/expired) verified OK")
+
+# ==========================================
+# E2E-15: 系统事件规则与全局开关控制验证
+# ==========================================
+print("\n[E2E-15] Testing System Event Rules & Toggle Controls...")
+all_rules_list = requests.get(f"{BASE_URL}/api/rules", headers=headers).json()["rules"]
+sub_rule = next(r for r in all_rules_list if r["action"] == "event_subscribe")
+fall_rule = next(r for r in all_rules_list if r["action"] == "event_fallback")
+
+# 1. 测试关注事件触发
+xml_sub = """<xml><ToUserName><![CDATA[gh_test]]></ToUserName><FromUserName><![CDATA[fan_newbie]]></FromUserName><CreateTime>12345703</CreateTime><MsgType><![CDATA[event]]></MsgType><Event><![CDATA[subscribe]]></Event></xml>"""
+res_sub = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_sub.encode("utf-8"))
+reply_sub = ET.fromstring(res_sub.content.decode("utf-8")).findtext("Content") or ""
+assert "欢迎关注" in reply_sub
+
+# 2. 停用关注欢迎规则并测试静默
+requests.put(f"{BASE_URL}/api/rules/{sub_rule['id']}", json={
+    "keyword": sub_rule["keyword"],
+    "mode": sub_rule["mode"],
+    "action": sub_rule["action"],
+    "content": sub_rule["content"],
+    "enabled": False
+}, headers=headers)
+res_sub_disabled = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_sub.encode("utf-8"))
+assert res_sub_disabled.text.strip() == "success" or not ET.fromstring(res_sub_disabled.content.decode("utf-8")).findtext("Content")
+
+# 3. 测试未识别发言的默认兜底回复
+xml_rand = """<xml><ToUserName><![CDATA[gh_test]]></ToUserName><FromUserName><![CDATA[fan_newbie]]></FromUserName><CreateTime>12345704</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[今天天气怎么样啊]]></Content></xml>"""
+res_rand = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_rand.encode("utf-8"))
+reply_rand = ET.fromstring(res_rand.content.decode("utf-8")).findtext("Content") or ""
+assert "收到您的留言" in reply_rand
+
+# 4. 停用默认兜底规则并测试静默
+requests.put(f"{BASE_URL}/api/rules/{fall_rule['id']}", json={
+    "keyword": fall_rule["keyword"],
+    "mode": fall_rule["mode"],
+    "action": fall_rule["action"],
+    "content": fall_rule["content"],
+    "enabled": False
+}, headers=headers)
+res_rand_disabled = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_rand.encode("utf-8"))
+assert res_rand_disabled.text.strip() == "success"
+print("  -> System event rules (subscribe & fallback) and independent toggles verified OK")
+
 # 清理测试临时库
 try:
     os.remove(temp_db.name)
 except Exception:
     pass
 
-print("\n🎉 ALL E2E SUITE TESTS (E2E-01 -> E2E-10) PASSED SUCCESSFULLY!")
+print("\n🎉 ALL E2E SUITE TESTS (E2E-01 -> E2E-15) PASSED SUCCESSFULLY!")

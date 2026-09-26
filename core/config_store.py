@@ -36,9 +36,16 @@ def is_wechat_configured() -> bool:
 
 
 def get_website_url() -> str:
-    """获取生效的兑换网站 URL：环境变量优先，其次数据库，默认兜底。"""
+    """获取生效的兑换网站 URL：环境变量优先，其次 custom_variables 或 site_settings，默认兜底。"""
     if config.ENV_WEBSITE_URL:
         return config.ENV_WEBSITE_URL
+    try:
+        with db() as conn:
+            row = conn.execute("SELECT value FROM custom_variables WHERE key = 'site'").fetchone()
+            if row and row["value"]:
+                return row["value"].strip()
+    except Exception:
+        pass
     db_url = get_setting("website_url", "").strip()
     return db_url or config.DEFAULT_WEBSITE_URL
 
@@ -48,9 +55,16 @@ def is_website_url_from_env() -> bool:
 
 
 def get_group_id() -> str:
-    """获取生效的群微信号：环境变量优先，其次数据库。"""
+    """获取生效的群微信号：环境变量优先，其次 custom_variables 或 site_settings。"""
     if config.GROUP_WECHAT_ID:
         return config.GROUP_WECHAT_ID
+    try:
+        with db() as conn:
+            row = conn.execute("SELECT value FROM custom_variables WHERE key = 'group'").fetchone()
+            if row and row["value"]:
+                return row["value"].strip()
+    except Exception:
+        pass
     return get_setting("group_id", "").strip()
 
 

@@ -1,27 +1,92 @@
-"""关键词回复规则引擎：规则按 priority 首个命中；占位符 {code} {site} {group}。"""
+"""关键词回复规则引擎：规则按 priority 首个命中；支持 exact/contains/regex 匹配与多状态分支文案。"""
 
+import json
 import re
 import time
-from typing import Optional, Dict, List
+from datetime import datetime
+from typing import Dict, List, Optional
 
 import config
 import core.config_store as cs
 from db.database import db
 
 
-def load_rules():
+# ----------------- 自定义变量管理 -----------------
+
+
+def list_custom_variables() -> List[dict]:
     with db() as conn:
         rows = conn.execute(
-            "SELECT id, keyword, mode, action, content, priority, enabled, recipe "
+            "SELECT id, key, value, description, created_at FROM custom_variables ORDER BY id ASC"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def get_custom_variables_map() -> Dict[str, str]:
+    try:
+        with db() as conn:
+            rows = conn.execute("SELECT key, value FROM custom_variables").fetchall()
+            return {r["key"]: r["value"] for r in rows}
+    except Exception:
+        return {}
+
+
+def get_custom_variable(key: str, default: str = "") -> str:
+    with db() as conn:
+        row = conn.execute("SELECT value FROM custom_variables WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+
+
+def set_custom_variable(key: str, value: str, description: str = "") -> int:
+    clean_key = (key or "").strip().lower()
+    clean_val = value or ""
+    clean_desc = (description or "").strip()
+    with db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM custom_variables WHERE key = ?", (clean_key,))
+        row = cursor.fetchone()
+        if row:
+            cursor.execute(
+                "UPDATE custom_variables SET value = ?, description = ? WHERE id = ?",
+                (clean_val, clean_desc, row["id"]),
+            )
+            var_id = row["id"]
+        else:
+            cursor.execute(
+                "INSERT INTO custom_variables (key, value, description) VALUES (?, ?, ?)",
+                (clean_key, clean_val, clean_desc),
+            )
+            var_id = cursor.lastrowid
+        conn.commit()
+        return int(var_id or 0)
+
+
+def delete_custom_variable(var_id: int) -> bool:
+    with db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM custom_variables WHERE id = ?", (var_id,))
+        conn.commit()
+        return cursor.rowcount > 0
+
+
+# ----------------- 规则加载与管理 -----------------
+
+
+def load_rules() -> List[dict]:
+    with db() as conn:
+        rows = conn.execute(
+            "SELECT id, keyword, mode, action, content, priority, enabled, recipe, "
+            "status_replies, start_time, end_time "
             "FROM keyword_rules WHERE enabled = 1 ORDER BY priority ASC, id ASC"
         ).fetchall()
         return [dict(r) for r in rows]
 
 
-def list_all_rules():
+def list_all_rules() -> List[dict]:
     with db() as conn:
         rows = conn.execute(
-            "SELECT id, keyword, mode, action, content, priority, enabled, recipe, created_at "
+            "SELECT id, keyword, mode, action, content, priority, enabled, recipe, "
+            "status_replies, start_time, end_time, created_at "
             "FROM keyword_rules ORDER BY priority ASC, id ASC"
         ).fetchall()
         return [dict(r) for r in rows]
@@ -71,6 +136,98 @@ def get_stock_summary() -> str:
         return ""
 
 
+# ----------------- 规则匹配与时效状态 -----------------
+
+
+def match_rule_keyword(rule: dict, content: str) -> bool:
+    """检查输入文本是否匹配规则关键词。支持 contains / exact / regex 模式。"""
+    text = (content or "").strip()
+    kw = (rule.get("keyword") or "").strip()
+    if not kw:
+        return False
+    mode = rule.get("mode", "contains")
+
+    if mode == "exact":
+        return text.lower() == kw.lower()
+    elif mode == "regex":
+        try:
+            return bool(re.search(kw, text, re.IGNORECASE))
+        except re.error:
+            return False
+    else:  # contains
+        return kw.lower() in text.lower()
+
+
+def check_rule_time_window(rule: dict) -> Optional[str]:
+    """检查规则是否处于允许的活动时间窗口。
+    返回:
+      'not_started': 活动尚未开始
+      'expired': 活动已经结束
+      None: 在时间窗口内（合法）
+    """
+    now = datetime.now()
+    start_str = (rule.get("start_time") or "").strip()
+    end_str = (rule.get("end_time") or "").strip()
+
+    if start_str:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                st = datetime.strptime(start_str, fmt)
+                if now < st:
+                    return "not_started"
+                break
+            except ValueError:
+                pass
+
+    if end_str:
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                et = datetime.strptime(end_str, fmt)
+                if now > et:
+                    return "expired"
+                break
+            except ValueError:
+                pass
+
+    return None
+
+
+def get_rule_status_reply(rule: dict, status: str) -> str:
+    """提取规则中指定状态分支的回复文案。
+    status ∈ 'new', 'repeat', 'empty', 'not_started', 'expired'
+    """
+    raw_replies = rule.get("status_replies") or ""
+    replies_dict = {}
+    if isinstance(raw_replies, dict):
+        replies_dict = raw_replies
+    elif isinstance(raw_replies, str) and raw_replies.strip():
+        try:
+            replies_dict = json.loads(raw_replies)
+        except Exception:
+            replies_dict = {}
+
+    val = (replies_dict.get(status) or "").strip()
+    if val:
+        return val
+
+    # 兜底默认值
+    content = (rule.get("content") or "").strip()
+    if status == "new":
+        return content or "🎉 您的专属激活码为：\n\n【{code}】\n\n👉 兑换地址：{site}\n\n每个用户限领一次，请前往上方兑换地址完成充值兑换！"
+    elif status == "repeat":
+        return content or "您之前已成功领取过专属激活码：\n\n【{code}】\n\n👉 兑换地址：{site}\n每个用户限领一次，已领取的激活码可随时在上方平台完成兑换！"
+    elif status == "empty":
+        return get_setting("empty_reply") or "抱歉，当前激活码已被领完，请稍后再试或联系管理员！\n平台地址：{site}"
+    elif status == "not_started":
+        return "抱歉，本期激活码领取活动尚未开始，敬请期待！"
+    elif status == "expired":
+        return "抱歉，本期激活码领取活动已经结束，感谢您的关注！"
+    return content
+
+
+# ----------------- 富占位符渲染引擎 -----------------
+
+
 def render(
     template: str,
     code: str = "",
@@ -86,8 +243,9 @@ def render(
       {date}: 日期 YYYY-MM-DD
       {time}: 时间 HH:MM:SS
       {stock}: 各池实时余量概览
-      {site}: 兑换网站 URL
-      {group}: 微信群微信号
+      {site}: 兑换网站 URL（从全局自定义变量或配置获取）
+      {group}: 微信群微信号（从全局自定义变量或配置获取）
+      {任意自定义变量}: 匹配 custom_variables 表中的 key
     """
     text = template or ""
     first_code = code
@@ -135,8 +293,16 @@ def render(
     if "{stock}" in text:
         text = text.replace("{stock}", get_stock_summary())
 
-    # 6. 站点与社群设置
-    text = text.replace("{site}", cs.get_website_url())
-    text = text.replace("{group}", cs.get_group_id())
+    # 6. 全局自定义变量（含 site, group 及用户新增的任意变量）
+    custom_vars = get_custom_variables_map()
+    if "site" not in custom_vars:
+        custom_vars["site"] = cs.get_website_url()
+    if "group" not in custom_vars:
+        custom_vars["group"] = cs.get_group_id()
+
+    for k, v in custom_vars.items():
+        placeholder = "{" + k + "}"
+        if placeholder in text:
+            text = text.replace(placeholder, str(v))
 
     return text

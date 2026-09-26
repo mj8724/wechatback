@@ -1,4 +1,4 @@
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
@@ -7,7 +7,7 @@ import config
 import core.config_store as cs
 from core.auth import bearer_token, issue_token, require_admin, revoke_all_tokens, revoke_token
 from core.security import check_rate_limit, escape_like, get_client_ip, is_valid_pwd, record_login_failure, record_login_success
-from core.rules import get_setting, list_all_rules, set_setting
+from core.rules import delete_custom_variable, get_setting, list_all_rules, list_custom_variables, set_custom_variable, set_setting
 from db.database import db
 
 router = APIRouter()
@@ -60,6 +60,17 @@ class UserBatchResetRequest(BaseModel):
     openids: List[str] = []
 
 
+class VariableCreateRequest(BaseModel):
+    key: str
+    value: str
+    description: Optional[str] = ""
+
+
+class VariableUpdateRequest(BaseModel):
+    value: str
+    description: Optional[str] = ""
+
+
 class RuleRequest(BaseModel):
     keyword: str = ""
     mode: str = "contains"
@@ -68,6 +79,9 @@ class RuleRequest(BaseModel):
     priority: int = 100
     enabled: bool = True
     recipe: Optional[str] = ""
+    status_replies: Optional[Any] = None
+    start_time: Optional[str] = ""
+    end_time: Optional[str] = ""
 
 
 class RuleBatchDeleteRequest(BaseModel):
@@ -87,6 +101,9 @@ class RuleImportItem(BaseModel):
     priority: int = 100
     enabled: bool = True
     recipe: str = ""
+    status_replies: Optional[Any] = None
+    start_time: Optional[str] = ""
+    end_time: Optional[str] = ""
 
 
 class RuleBatchImportRequest(BaseModel):
@@ -137,6 +154,7 @@ def setup_initial(req: SetupRequest, request: Request):
             raise HTTPException(status_code=400, detail="兑换网站地址必须以 http:// 或 https:// 开头且不超过 256 字")
         if not cs.is_website_url_from_env():
             cs.set_setting("website_url", url)
+            set_custom_variable("site", url, "兑换网站地址")
 
     if req.group_id:
         gid = req.group_id.strip()
@@ -144,6 +162,7 @@ def setup_initial(req: SetupRequest, request: Request):
             raise HTTPException(status_code=400, detail="群入口微信号长度不能超过 64 字")
         if not cs.is_group_id_from_env():
             cs.set_setting("group_id", gid)
+            set_custom_variable("group", gid, "微信群/客服入口微信号")
 
     record_login_success(ip)
     token, expires_at = issue_token()
@@ -691,20 +710,99 @@ def reset_users_batch(req: UserBatchResetRequest, request: Request):
             "message": f"已重置 {len(reset)} 人" + (f"，{len(not_found)} 人无码可收" if not_found else "")}
 
 
+def _serialize_status_replies(val: Any) -> str:
+    if val is None:
+        return ""
+    if isinstance(val, str):
+        return val
+    try:
+        import json
+        return json.dumps(val, ensure_ascii=False)
+    except Exception:
+        return ""
+
+
 def _check_rule(req: RuleRequest):
     kw = (req.keyword or "").strip()
-    if not kw:
-        raise HTTPException(status_code=400, detail="关键词不能为空")
-    if len(kw) > 64:
-        raise HTTPException(status_code=400, detail="关键词最多 64 字")
-    if req.mode not in ("contains", "exact"):
-        raise HTTPException(status_code=400, detail="匹配模式只能是 contains / exact")
-    if req.action not in ("none", "code"):
-        raise HTTPException(status_code=400, detail="动作只能是 none / code")
+    action = (req.action or "none").strip()
+    if action in ("event_subscribe", "event_fallback"):
+        if not kw:
+            kw = f"__{action}__"
+    else:
+        if not kw:
+            raise HTTPException(status_code=400, detail="关键词不能为空")
+        if len(kw) > 128:
+            raise HTTPException(status_code=400, detail="关键词最多 128 字")
+
+    if req.mode not in ("contains", "exact", "regex"):
+        raise HTTPException(status_code=400, detail="匹配模式只能是 contains / exact / regex")
+
+    if req.mode == "regex" and not action.startswith("event_"):
+        import re
+        try:
+            re.compile(kw)
+        except re.error as e:
+            raise HTTPException(status_code=400, detail=f"正则表达式语法错误: {str(e)}")
+
+    if action not in ("none", "code", "event_subscribe", "event_fallback"):
+        raise HTTPException(status_code=400, detail="动作只能是 none / code / event_subscribe / event_fallback")
+
     if len(req.content or "") > 2000:
         raise HTTPException(status_code=400, detail="回复内容最多 2000 字")
     req.priority = max(0, min(int(req.priority or 0), 10000))
     return kw
+
+
+@router.get("/api/variables")
+def get_variables(request: Request):
+    require_admin(request)
+    return {"status": "success", "variables": list_custom_variables()}
+
+
+@router.post("/api/variables")
+def create_variable(req: VariableCreateRequest, request: Request):
+    require_admin(request)
+    k = (req.key or "").strip().lower()
+    if not k or len(k) > 32:
+        raise HTTPException(status_code=400, detail="变量标识 key 不能为空且最多 32 字")
+    import re
+    if not re.match(r"^[a-zA-Z0-9_]{1,32}$", k):
+        raise HTTPException(status_code=400, detail="变量标识 key 只能由字母、数字和下划线组成")
+    var_id = set_custom_variable(k, req.value or "", req.description or "")
+    return {"status": "success", "id": var_id}
+
+
+@router.put("/api/variables/{var_id}")
+def update_variable(var_id: int, req: VariableUpdateRequest, request: Request):
+    require_admin(request)
+    with db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, key FROM custom_variables WHERE id = ?", (var_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="变量不存在")
+        cursor.execute(
+            "UPDATE custom_variables SET value = ?, description = ? WHERE id = ?",
+            (req.value or "", req.description or "", var_id),
+        )
+        conn.commit()
+    return {"status": "success"}
+
+
+@router.delete("/api/variables/{var_id}")
+def remove_variable(var_id: int, request: Request):
+    require_admin(request)
+    with db() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, key FROM custom_variables WHERE id = ?", (var_id,))
+        row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="变量不存在")
+        if row["key"] in ("site", "group"):
+            raise HTTPException(status_code=400, detail="系统核心内置变量（site, group）禁止删除，可在列表中直接修改其内容")
+        cursor.execute("DELETE FROM custom_variables WHERE id = ?", (var_id,))
+        conn.commit()
+    return {"status": "success"}
 
 
 @router.get("/api/rules")
@@ -717,11 +815,12 @@ def list_rules(request: Request):
 def create_rule(req: RuleRequest, request: Request):
     require_admin(request)
     kw = _check_rule(req)
+    sr_str = _serialize_status_replies(req.status_replies)
     with db() as conn:
         cur = conn.execute(
-            "INSERT INTO keyword_rules (keyword, mode, action, content, priority, enabled, recipe) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (kw, req.mode, req.action, req.content or "", int(req.priority), 1 if req.enabled else 0, req.recipe or ""),
+            "INSERT INTO keyword_rules (keyword, mode, action, content, priority, enabled, recipe, status_replies, start_time, end_time) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (kw, req.mode, req.action, req.content or "", int(req.priority), 1 if req.enabled else 0, req.recipe or "", sr_str, req.start_time or "", req.end_time or ""),
         )
         conn.commit()
         rule_id = cur.lastrowid
@@ -732,11 +831,12 @@ def create_rule(req: RuleRequest, request: Request):
 def update_rule(rule_id: int, req: RuleRequest, request: Request):
     require_admin(request)
     kw = _check_rule(req)
+    sr_str = _serialize_status_replies(req.status_replies)
     with db() as conn:
         cur = conn.execute(
             "UPDATE keyword_rules SET keyword = ?, mode = ?, action = ?, content = ?, "
-            "priority = ?, enabled = ?, recipe = ? WHERE id = ?",
-            (kw, req.mode, req.action, req.content or "", int(req.priority), 1 if req.enabled else 0, req.recipe or "", rule_id),
+            "priority = ?, enabled = ?, recipe = ?, status_replies = ?, start_time = ?, end_time = ? WHERE id = ?",
+            (kw, req.mode, req.action, req.content or "", int(req.priority), 1 if req.enabled else 0, req.recipe or "", sr_str, req.start_time or "", req.end_time or "", rule_id),
         )
         conn.commit()
         if cur.rowcount == 0:
@@ -800,31 +900,35 @@ def batch_import_rules(req: RuleBatchImportRequest, request: Request):
         cursor = conn.cursor()
         for item in req.rules:
             kw = (item.keyword or "").strip()
-            if not kw or len(kw) > 64:
+            if not kw or len(kw) > 128:
                 continue
-            mode = item.mode if item.mode in ("contains", "exact") else "contains"
-            action = item.action if item.action in ("none", "code") else "none"
+            mode = item.mode if item.mode in ("contains", "exact", "regex") else "contains"
+            action = item.action if item.action in ("none", "code", "event_subscribe", "event_fallback") else "none"
             content = (item.content or "")[:2000]
             priority = max(0, min(int(item.priority or 100), 10000))
             enabled = 1 if item.enabled else 0
             recipe = item.recipe or ""
+            sr_str = _serialize_status_replies(item.status_replies)
+            st_str = item.start_time or ""
+            et_str = item.end_time or ""
 
             cursor.execute("SELECT id FROM keyword_rules WHERE keyword = ? AND mode = ?", (kw, mode))
             existing = cursor.fetchone()
             if existing:
                 if req.mode == "overwrite":
                     cursor.execute("""
-                        UPDATE keyword_rules SET action = ?, content = ?, priority = ?, enabled = ?, recipe = ?
+                        UPDATE keyword_rules SET action = ?, content = ?, priority = ?, enabled = ?, recipe = ?,
+                               status_replies = ?, start_time = ?, end_time = ?
                         WHERE id = ?
-                    """, (action, content, priority, enabled, recipe, existing["id"]))
+                    """, (action, content, priority, enabled, recipe, sr_str, st_str, et_str, existing["id"]))
                     updated += 1
                 else:
                     skipped += 1
             else:
                 cursor.execute("""
-                    INSERT INTO keyword_rules (keyword, mode, action, content, priority, enabled, recipe)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (kw, mode, action, content, priority, enabled, recipe))
+                    INSERT INTO keyword_rules (keyword, mode, action, content, priority, enabled, recipe, status_replies, start_time, end_time)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (kw, mode, action, content, priority, enabled, recipe, sr_str, st_str, et_str))
                 added += 1
         conn.commit()
 
@@ -901,6 +1005,8 @@ def update_system_config(req: ConfigUpdateRequest, request: Request):
         if url and (len(url) > 256 or not (url.startswith("http://") or url.startswith("https://"))):
             raise HTTPException(status_code=400, detail="兑换网站地址必须以 http:// 或 https:// 开头且不超过 256 字")
         cs.set_setting("website_url", url)
+        if url:
+            set_custom_variable("site", url, "兑换网站地址")
 
     if req.group_id is not None:
         if cs.is_group_id_from_env():
@@ -909,6 +1015,8 @@ def update_system_config(req: ConfigUpdateRequest, request: Request):
         if len(gid) > 64:
             raise HTTPException(status_code=400, detail="微信群微信号长度不能超过 64 字")
         cs.set_setting("group_id", gid)
+        if gid:
+            set_custom_variable("group", gid, "微信群/客服入口微信号")
 
     if req.new_admin_password is not None and req.new_admin_password.strip():
         pwd = req.new_admin_password.strip()

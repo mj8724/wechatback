@@ -5,11 +5,11 @@
       <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
         <div>
           <h5 class="font-bold text-lg flex items-center gap-2">
-            💬 关键词回复规则
-            <span class="text-xs font-normal text-gray-500">按优先级升序首个命中，支持多品类配方发码</span>
+            💬 公众号回复规则中心
+            <span class="text-xs font-normal text-gray-500">按优先级升序命中，支持事件、正则、多状态发码</span>
           </h5>
           <p class="text-xs text-gray-400 mt-0.5">
-            占位符支持：<code>{code}</code>、<code>{codes}</code>、<code>{code.KEY}</code>、<code>{openid}</code>、<code>{date}</code>、<code>{time}</code>、<code>{stock}</code>
+            占位符支持：<code>{code}</code>、<code>{codes}</code>、<code>{code.KEY}</code>、<code>{openid}</code>、<code>{site}</code>、<code>{group}</code> 等全局变量
           </p>
         </div>
         <div class="flex flex-wrap items-center gap-2">
@@ -33,15 +33,15 @@
         <table class="w-full text-sm">
           <thead>
             <tr class="text-left text-gray-500 border-b">
-              <th class="py-2 pr-2 w-8">
+              <th class="py-2.5 pr-2 w-8">
                 <input type="checkbox" :checked="isAllSelected" @change="toggleSelectAll" />
               </th>
-              <th>关键词</th>
-              <th>匹配</th>
-              <th>动作与配方</th>
+              <th>触发条件 / 事件</th>
+              <th>匹配模式</th>
+              <th>动作与详情</th>
               <th>优先级</th>
-              <th>开关</th>
-              <th>操作</th>
+              <th>启用开关</th>
+              <th class="text-right pr-2">操作</th>
             </tr>
           </thead>
           <tbody>
@@ -49,37 +49,63 @@
               <td colspan="7" class="text-center text-gray-400 py-8">暂无回复规则</td>
             </tr>
             <tr v-for="r in rules" :key="r.id" class="border-t hover:bg-gray-50">
-              <td class="py-2 pr-2">
+              <td class="py-2.5 pr-2">
                 <input type="checkbox" :value="r.id" v-model="selectedRuleIds" />
               </td>
-              <td class="py-2 font-mono font-bold text-gray-800">
-                <code>{{ r.keyword }}</code>
+              <td class="py-2.5 font-mono font-bold text-gray-800">
+                <span v-if="r.action === 'event_subscribe'" class="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-blue-50 text-blue-800 font-sans text-xs border border-blue-200">
+                  👋 [系统事件] 关注公众号
+                </span>
+                <span v-else-if="r.action === 'event_fallback'" class="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-amber-50 text-amber-800 font-sans text-xs border border-amber-200">
+                  🤖 [系统事件] 无匹配未识别兜底
+                </span>
+                <code v-else class="text-sm">{{ r.keyword }}</code>
               </td>
               <td>
-                <span class="text-xs px-2 py-0.5 rounded font-medium"
-                  :class="r.mode === 'exact' ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'">
-                  {{ r.mode === 'exact' ? '完全一致' : '包含匹配' }}
+                <span v-if="r.action && r.action.startsWith('event_')" class="text-xs px-2 py-0.5 rounded font-medium bg-gray-100 text-gray-600">
+                  系统事件
+                </span>
+                <span v-else-if="r.mode === 'regex'" class="text-xs px-2 py-0.5 rounded font-medium bg-purple-100 text-purple-800 font-mono">
+                  🔣 正则匹配
+                </span>
+                <span v-else-if="r.mode === 'exact'" class="text-xs px-2 py-0.5 rounded font-medium bg-indigo-100 text-indigo-700">
+                  完全一致
+                </span>
+                <span v-else class="text-xs px-2 py-0.5 rounded font-medium bg-blue-100 text-blue-700">
+                  包含匹配
                 </span>
               </td>
               <td>
-                <div v-if="r.action === 'code'" class="flex items-center gap-1.5">
-                  <span class="text-xs bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded">🎟️ 发码</span>
-                  <span class="text-xs text-gray-600">{{ formatRecipeSummary(r.recipe) }}</span>
+                <div v-if="r.action === 'code'" class="flex items-center gap-1.5 flex-wrap">
+                  <span class="text-xs bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded">🎟️ 发放激活码</span>
+                  <span class="text-xs text-gray-600 font-mono">{{ formatRecipeSummary(r.recipe) }}</span>
+                  <span v-if="r.start_time || r.end_time" class="text-[10px] bg-sky-100 text-sky-800 px-1.5 py-0.5 rounded font-medium" title="设置了活动时间限制">
+                    ⏱️ 限时
+                  </span>
+                </div>
+                <div v-else-if="r.action === 'event_subscribe'" class="text-xs text-blue-700 font-medium">
+                  <span>关注欢迎语</span>
+                </div>
+                <div v-else-if="r.action === 'event_fallback'" class="text-xs text-amber-700 font-medium">
+                  <span>默认未识别留言回复</span>
                 </div>
                 <div v-else class="text-xs text-gray-500">
-                  <span>💬 回复文本</span>
+                  <span>💬 回复普通文本</span>
                 </div>
               </td>
               <td><span class="text-xs font-mono font-medium">{{ r.priority }}</span></td>
               <td>
-                <button @click="toggle(r)" class="text-xs px-2 py-0.5 rounded font-bold"
-                  :class="r.enabled ? 'bg-green-100 text-green-700' : 'bg-gray-200 text-gray-500'">
-                  {{ r.enabled ? '启用' : '停用' }}
+                <button
+                  @click="toggle(r)"
+                  class="text-xs px-2.5 py-1 rounded font-bold transition shadow-sm"
+                  :class="r.enabled ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200' : 'bg-gray-200 text-gray-500 hover:bg-gray-300'"
+                >
+                  {{ r.enabled ? '✓ 已启用' : '✕ 已停用' }}
                 </button>
               </td>
-              <td>
-                <button @click="startEdit(r)" class="text-xs px-2 py-1 rounded bg-sky-50 text-sky-600 hover:bg-sky-100 font-bold">编辑</button>
-                <button @click="onDelete(r)" class="ml-1 text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100 font-bold">删除</button>
+              <td class="text-right pr-2">
+                <button @click="startEdit(r)" class="text-xs px-2.5 py-1 rounded bg-sky-50 text-sky-600 hover:bg-sky-100 font-bold">编辑</button>
+                <button @click="onDelete(r)" class="ml-1.5 text-xs px-2.5 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100 font-bold">删除</button>
               </td>
             </tr>
           </tbody>
@@ -120,8 +146,8 @@
       @imported="load"
     />
 
-    <!-- 固定回复与社群配置组件 -->
-    <FixedSettings />
+    <!-- 全局自定义变量中心组件 -->
+    <CustomVariables ref="variablesRef" />
   </div>
 </template>
 
@@ -136,7 +162,7 @@ import {
 
 import RuleForm from '../components/rules/RuleForm.vue'
 import RuleImportModal from '../components/rules/RuleImportModal.vue'
-import FixedSettings from '../components/rules/FixedSettings.vue'
+import CustomVariables from '../components/rules/CustomVariables.vue'
 
 const router = useRouter()
 const rules = ref([])
@@ -145,6 +171,7 @@ const editing = ref(false)
 const currentRule = ref(null)
 const selectedRuleIds = ref([])
 const showImportModal = ref(false)
+const variablesRef = ref(null)
 
 const isAllSelected = computed(() => {
   return rules.value.length > 0 && rules.value.every((r) => selectedRuleIds.value.includes(r.id))
@@ -197,23 +224,9 @@ function startEdit(r) {
   editing.value = true
 }
 
-async function onRuleSaved() {
-  editing.value = false
-  currentRule.value = null
-  await load()
-}
-
-async function toggle(r) {
-  try {
-    await saveRule({ ...r, enabled: !r.enabled })
-    await load()
-  } catch (e) {
-    alert('切换失败：' + (e.detail || '未知错误'))
-  }
-}
-
 async function onDelete(r) {
-  if (!confirm(`确定删除关键词【${r.keyword}】吗？`)) return
+  const label = r.action?.startsWith('event_') ? (r.action === 'event_subscribe' ? '关注欢迎语' : '未识别兜底回复') : `"${r.keyword}"`
+  if (!confirm(`确定删除规则 ${label} 吗？`)) return
   try {
     await deleteRule(r.id)
     await load()
@@ -222,13 +235,34 @@ async function onDelete(r) {
   }
 }
 
+async function toggle(r) {
+  try {
+    await saveRule({
+      keyword: r.keyword,
+      mode: r.mode,
+      action: r.action,
+      content: r.content,
+      priority: r.priority,
+      enabled: !r.enabled,
+      recipe: r.recipe,
+      status_replies: r.status_replies,
+      start_time: r.start_time,
+      end_time: r.end_time,
+    }, r.id)
+    r.enabled = r.enabled ? 0 : 1
+  } catch (e) {
+    alert('操作失败：' + (e.detail || '未知错误'))
+  }
+}
+
 async function batchToggle(enabled) {
   if (!selectedRuleIds.value.length) return
   try {
     await batchToggleRules(selectedRuleIds.value, enabled)
     await load()
+    selectedRuleIds.value = []
   } catch (e) {
-    alert('批量操作失败：' + (e.detail || '未知错误'))
+    alert('操作失败：' + (e.detail || '未知错误'))
   }
 }
 
@@ -237,11 +271,36 @@ async function batchDelete() {
   if (!confirm(`确定批量删除选中的 ${selectedRuleIds.value.length} 条规则吗？`)) return
   try {
     await batchDeleteRules(selectedRuleIds.value)
-    selectedRuleIds.value = []
     await load()
+    selectedRuleIds.value = []
   } catch (e) {
     alert('批量删除失败：' + (e.detail || '未知错误'))
   }
+}
+
+function onRuleSaved() {
+  editing.value = false
+  load()
+}
+
+function downloadTemplate() {
+  const data = [
+    {
+      '关键词': '测试关键词',
+      '匹配模式(contains/exact/regex)': 'contains',
+      '动作(none/code)': 'code',
+      '回复文案': '🎉 您的专属激活码为：【{code}】\n👉 兑换地址：{site}',
+      '优先级(数字越小越先)': 100,
+      '启用状态(1启用/0停用)': 1,
+      '发码配方(可选格式 key1:数量,key2:数量)': 'default:1',
+      '开始时间(可选 YYYY-MM-DD HH:MM:SS)': '',
+      '结束时间(可选 YYYY-MM-DD HH:MM:SS)': '',
+    },
+  ]
+  const ws = XLSX.utils.json_to_sheet(data)
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, '规则导入模板')
+  XLSX.writeFile(wb, 'wechat_rules_template.xlsx')
 }
 
 function exportToExcel() {
@@ -249,52 +308,23 @@ function exportToExcel() {
     alert('暂无规则可导出')
     return
   }
-  const data = rules.value.map((r) => ({
-    关键词: r.keyword,
-    匹配模式: r.mode === 'exact' ? '完全一致' : '包含',
-    动作: r.action === 'code' ? '发码' : '回复文本',
-    发码配方: r.recipe || '',
-    回复内容: r.content,
-    优先级: r.priority,
-    是否启用: r.enabled ? '是' : '否',
+  const rows = rules.value.map((r) => ({
+    'ID': r.id,
+    '关键词': r.keyword,
+    '匹配模式': r.mode,
+    '动作': r.action,
+    '优先级': r.priority,
+    '启用状态': r.enabled ? '已启用' : '已停用',
+    '发码配方': r.recipe || '',
+    '开始时间': r.start_time || '',
+    '结束时间': r.end_time || '',
+    '回复内容': r.content || '',
+    '创建时间': r.created_at || '',
   }))
-  const ws = XLSX.utils.json_to_sheet(data)
+  const ws = XLSX.utils.json_to_sheet(rows)
   const wb = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(wb, ws, '回复规则')
-  XLSX.writeFile(wb, `回复规则-${new Date().toISOString().slice(0, 10)}.xlsx`)
-}
-
-function downloadTemplate() {
-  const sample = [
-    {
-      关键词: '激活码',
-      匹配模式: '包含',
-      动作: '发码',
-      发码配方: '[{"key":"default","count":1}]',
-      回复内容: '您的专属激活码：{code}',
-      优先级: 10,
-    },
-    {
-      关键词: 'AI',
-      匹配模式: '完全一致',
-      动作: '发码',
-      发码配方: '[{"key":"default","count":1},{"key":"gpt","count":2}]',
-      回复内容: '领到卡密：\n{codes}',
-      优先级: 20,
-    },
-    {
-      关键词: '微信群',
-      匹配模式: '包含',
-      动作: '回复文本',
-      发码配方: '',
-      回复内容: '请添加管理员微信：{group}',
-      优先级: 30,
-    },
-  ]
-  const ws = XLSX.utils.json_to_sheet(sample)
-  const wb = XLSX.utils.book_new()
-  XLSX.utils.book_append_sheet(wb, ws, '规则模板')
-  XLSX.writeFile(wb, '关键词回复规则模板.xlsx')
+  XLSX.utils.book_append_sheet(wb, ws, '回复规则列表')
+  XLSX.writeFile(wb, `wechat_rules_${Date.now()}.xlsx`)
 }
 
 onMounted(load)

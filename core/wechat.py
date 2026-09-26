@@ -4,7 +4,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import config
-from core.rules import get_setting, load_rules, render
+from core.rules import check_rule_time_window, get_rule_status_reply, get_setting, load_rules, match_rule_keyword, render
 from db.database import db
 
 MAX_ASSIGN_RETRIES = 5
@@ -190,40 +190,66 @@ def _claim_code(conn, openid: str):
 
 
 def decide_reply(msg_type: str, event: str, content: str, from_user: str) -> Optional[str]:
+    all_active_rules = load_rules()
+
+    # 1. 关注/扫码事件
     if msg_type == "event" and event in ["subscribe", "scan"]:
-        welcome_tpl = get_setting("welcome_reply")
-        return render(welcome_tpl, openid=from_user)
+        for rule in all_active_rules:
+            if rule.get("action") == "event_subscribe":
+                return render(rule.get("content") or "", openid=from_user)
+        return None
+
     if msg_type != "text":
         return None
-    t = content.strip().lower()
-    for rule in load_rules():
-        kw = (rule["keyword"] or "").lower()
-        if not kw:
+
+    # 2. 文本关键词规则匹配
+    for rule in all_active_rules:
+        action = rule.get("action", "")
+        if action.startswith("event_"):
             continue
-        hit = (t == kw) if rule["mode"] == "exact" else (kw in t)
-        if not hit:
+
+        if not match_rule_keyword(rule, content):
             continue
-        if rule["action"] == "code":
-            return render_code_reply(
-                rule["content"],
-                from_user,
-                rule_id=rule.get("id", 0),
-                recipe_raw=rule.get("recipe", ""),
-            )
-        return render(rule["content"], openid=from_user)
-    fallback_tpl = get_setting("fallback_reply")
-    return render(fallback_tpl, openid=from_user)
+
+        if action == "code":
+            time_status = check_rule_time_window(rule)
+            if time_status in ("not_started", "expired"):
+                tpl = get_rule_status_reply(rule, time_status)
+                return render(tpl, openid=from_user)
+
+            return render_code_reply_with_rule(rule, from_user)
+
+        return render(rule.get("content") or "", openid=from_user)
+
+    # 3. 兜底未识别回复（优先查启用的 event_fallback 规则）
+    for rule in all_active_rules:
+        if rule.get("action") == "event_fallback":
+            return render(rule.get("content") or "", openid=from_user)
+
+    return None
+
+
+def render_code_reply_with_rule(rule: dict, openid: str) -> str:
+    """根据规则定义与发码状态（首发/已领/缺货）分支渲染回复。"""
+    rule_id = rule.get("id", 0)
+    recipe_raw = rule.get("recipe", "")
+    data, kind = assign_recipe_codes(openid, rule_id, recipe_raw)
+
+    if kind in ("retry", "error"):
+        return "系统繁忙，请稍后再试！"
+
+    status_key = "repeat" if kind == "existing" else kind
+    tpl = get_rule_status_reply(rule, status_key)
+
+    codes_map = data.get("codes_map") if data else {}
+    first_code = data.get("first_code", "") if data else ""
+    return render(tpl, code=first_code, codes_map=codes_map, openid=openid)
 
 
 def render_code_reply(template: str, openid: str, rule_id: int = 0, recipe_raw: str = "") -> str:
-    data, kind = assign_recipe_codes(openid, rule_id, recipe_raw)
-    if kind == "empty":
-        return get_setting("empty_reply")
-    if kind in ("retry", "error"):
-        return "系统繁忙，请稍后再试！"
-    codes_map = data.get("codes_map") if data else {}
-    first_code = data.get("first_code", "") if data else ""
-    return render(template, code=first_code, codes_map=codes_map, openid=openid)
+    """向后兼容发码渲染函数。"""
+    rule = {"id": rule_id, "recipe": recipe_raw, "content": template}
+    return render_code_reply_with_rule(rule, openid)
 
 
 def assign_recipe_codes(openid: str, rule_id: int = 0, recipe_raw: str = ""):

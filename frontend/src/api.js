@@ -215,6 +215,41 @@ export async function deletePool(id) {
   return resData
 }
 
+export async function getVariables() {
+  const res = await req('/api/variables')
+  if (!res.ok) throw { status: res.status, detail: '获取变量列表失败' }
+  return res.json()
+}
+
+export async function createVariable(data) {
+  const res = await req('/api/variables', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  })
+  const resData = await res.json().catch(() => ({}))
+  if (!res.ok) throw { status: res.status, detail: resData.detail || '创建变量失败' }
+  return resData
+}
+
+export async function updateVariable(id, data) {
+  const res = await req(`/api/variables/${id}`, {
+    method: 'PUT',
+    body: JSON.stringify(data),
+  })
+  const resData = await res.json().catch(() => ({}))
+  if (!res.ok) throw { status: res.status, detail: resData.detail || '更新变量失败' }
+  return resData
+}
+
+export async function deleteVariable(id) {
+  const res = await req(`/api/variables/${id}`, {
+    method: 'DELETE',
+  })
+  const resData = await res.json().catch(() => ({}))
+  if (!res.ok) throw { status: res.status, detail: resData.detail || '删除变量失败' }
+  return resData
+}
+
 export async function batchDeleteRules(ids) {
   const res = await req('/api/rules/batch-delete', {
     method: 'POST',
