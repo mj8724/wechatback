@@ -1,111 +1,134 @@
 <template>
-  <div>
-    <!-- 主规则卡片 -->
-    <div class="bg-white rounded-xl shadow p-5 mt-4">
-      <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
-        <div>
-          <h5 class="font-bold text-lg flex items-center gap-2">
-            💬 公众号回复规则中心
-            <span class="text-xs font-normal text-gray-500">按优先级升序命中，支持事件、正则、多状态发码</span>
-          </h5>
-          <p class="text-xs text-gray-400 mt-0.5">
-            占位符支持：<code>{code}</code>、<code>{codes}</code>、<code>{code.KEY}</code>、<code>{openid}</code>、<code>{site}</code>、<code>{group}</code> 等全局变量
-          </p>
-        </div>
-        <div class="flex flex-wrap items-center gap-2">
-          <button @click="downloadTemplate" class="px-3 py-1.5 rounded-lg border border-gray-300 hover:bg-gray-50 text-xs font-bold text-gray-700">
-            📄 模板下载
-          </button>
-          <button @click="showImportModal = true" class="px-3 py-1.5 rounded-lg border border-sky-300 bg-sky-50 hover:bg-sky-100 text-xs font-bold text-sky-700">
-            📥 导入 Excel
-          </button>
-          <button @click="exportToExcel" class="px-3 py-1.5 rounded-lg border border-emerald-300 bg-emerald-50 hover:bg-emerald-100 text-xs font-bold text-emerald-700">
-            📤 导出 Excel
-          </button>
-          <button @click="startAdd" class="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-sm">
-            + 新增规则
-          </button>
-        </div>
+  <div class="mt-4">
+    <!-- 二级导航 Tab：规则列表 / 全局变量 -->
+    <div class="flex items-center justify-between mb-3">
+      <div class="flex gap-2">
+        <button
+          @click="subTab = 'rules'"
+          class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5"
+          :class="subTab === 'rules' ? 'bg-emerald-600 text-white shadow-sm' : 'bg-white text-gray-700 hover:bg-gray-50 border'"
+        >
+          <span>回复规则</span>
+          <span
+            class="text-[10px] px-1.5 py-0.5 rounded-full"
+            :class="subTab === 'rules' ? 'bg-white/25 text-white' : 'bg-gray-100 text-gray-600'"
+          >
+            {{ rules.length }}
+          </span>
+        </button>
+        <button
+          @click="subTab = 'variables'"
+          class="px-3.5 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1"
+          :class="subTab === 'variables' ? 'bg-emerald-600 text-white shadow-sm' : 'bg-white text-gray-700 hover:bg-gray-50 border'"
+        >
+          <span>全局变量</span>
+          <HelpTip text="在此集中管理可在回复中随处调用的 {site}、{group} 等自定义变量" />
+        </button>
       </div>
 
+      <!-- 规则操作按钮区（仅在 rules Tab 显示） -->
+      <div v-show="subTab === 'rules'" class="flex items-center gap-2">
+        <button @click="downloadTemplate" class="px-2.5 py-1.5 rounded-lg border border-gray-300 hover:bg-gray-50 text-xs text-gray-700 font-medium">
+          模板
+        </button>
+        <button @click="showImportModal = true" class="px-2.5 py-1.5 rounded-lg border border-sky-200 bg-sky-50 hover:bg-sky-100 text-xs text-sky-700 font-medium">
+          导入
+        </button>
+        <button @click="exportToExcel" class="px-2.5 py-1.5 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-xs text-emerald-700 font-medium">
+          导出
+        </button>
+        <button @click="startAdd" class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-sm">
+          + 新增规则
+        </button>
+      </div>
+    </div>
+
+    <!-- 1. 规则列表卡片 -->
+    <div v-show="subTab === 'rules'" class="bg-white rounded-xl shadow p-5">
       <!-- 规则表格 -->
       <div class="overflow-x-auto">
         <table class="w-full text-sm">
           <thead>
-            <tr class="text-left text-gray-500 border-b">
+            <tr class="text-left text-gray-500 border-b text-xs">
               <th class="py-2.5 pr-2 w-8">
                 <input type="checkbox" :checked="isAllSelected" @change="toggleSelectAll" />
               </th>
-              <th>触发条件 / 事件</th>
-              <th>匹配模式</th>
+              <th>
+                触发条件
+                <HelpTip text="关键词、正则模式或关注/兜底系统事件" />
+              </th>
+              <th>模式</th>
               <th>动作与详情</th>
-              <th>优先级</th>
-              <th>启用开关</th>
+              <th>
+                优先级
+                <HelpTip text="数字越小越先触发匹配，命中首条即返回回复" />
+              </th>
+              <th>状态</th>
               <th class="text-right pr-2">操作</th>
             </tr>
           </thead>
           <tbody>
             <tr v-if="!rules.length">
-              <td colspan="7" class="text-center text-gray-400 py-8">暂无回复规则</td>
+              <td colspan="7" class="text-center text-gray-400 py-8 text-xs">暂无回复规则</td>
             </tr>
             <tr v-for="r in rules" :key="r.id" class="border-t hover:bg-gray-50">
               <td class="py-2.5 pr-2">
                 <input type="checkbox" :value="r.id" v-model="selectedRuleIds" />
               </td>
-              <td class="py-2.5 font-mono font-bold text-gray-800">
-                <span v-if="r.action === 'event_subscribe'" class="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-blue-50 text-blue-800 font-sans text-xs border border-blue-200">
-                  👋 [系统事件] 关注公众号
+              <td class="py-2.5 font-mono text-gray-800">
+                <span v-if="r.action === 'event_subscribe'" class="px-2 py-0.5 rounded bg-blue-50 text-blue-700 text-xs font-medium border border-blue-200 font-sans">
+                  关注欢迎语
                 </span>
-                <span v-else-if="r.action === 'event_fallback'" class="inline-flex items-center gap-1 px-2.5 py-1 rounded bg-amber-50 text-amber-800 font-sans text-xs border border-amber-200">
-                  🤖 [系统事件] 无匹配未识别兜底
+                <span v-else-if="r.action === 'event_fallback'" class="px-2 py-0.5 rounded bg-amber-50 text-amber-700 text-xs font-medium border border-amber-200 font-sans">
+                  默认兜底回复
                 </span>
-                <code v-else class="text-sm">{{ r.keyword }}</code>
+                <code v-else class="text-xs bg-gray-100 px-1.5 py-0.5 rounded text-gray-800 font-bold">{{ r.keyword }}</code>
               </td>
               <td>
-                <span v-if="r.action && r.action.startsWith('event_')" class="text-xs px-2 py-0.5 rounded font-medium bg-gray-100 text-gray-600">
-                  系统事件
+                <span v-if="r.action && r.action.startsWith('event_')" class="text-[11px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-500">
+                  事件
                 </span>
-                <span v-else-if="r.mode === 'regex'" class="text-xs px-2 py-0.5 rounded font-medium bg-purple-100 text-purple-800 font-mono">
-                  🔣 正则匹配
+                <span v-else-if="r.mode === 'regex'" class="text-[11px] px-1.5 py-0.5 rounded bg-purple-50 text-purple-700 border border-purple-200 font-mono">
+                  正则
                 </span>
-                <span v-else-if="r.mode === 'exact'" class="text-xs px-2 py-0.5 rounded font-medium bg-indigo-100 text-indigo-700">
-                  完全一致
+                <span v-else-if="r.mode === 'exact'" class="text-[11px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
+                  全等
                 </span>
-                <span v-else class="text-xs px-2 py-0.5 rounded font-medium bg-blue-100 text-blue-700">
-                  包含匹配
+                <span v-else class="text-[11px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
+                  包含
                 </span>
               </td>
               <td>
                 <div v-if="r.action === 'code'" class="flex items-center gap-1.5 flex-wrap">
-                  <span class="text-xs bg-emerald-100 text-emerald-800 font-bold px-2 py-0.5 rounded">🎟️ 发放激活码</span>
-                  <span class="text-xs text-gray-600 font-mono">{{ formatRecipeSummary(r.recipe) }}</span>
-                  <span v-if="r.start_time || r.end_time" class="text-[10px] bg-sky-100 text-sky-800 px-1.5 py-0.5 rounded font-medium" title="设置了活动时间限制">
-                    ⏱️ 限时
+                  <span class="text-xs bg-emerald-50 text-emerald-800 border border-emerald-200 font-bold px-1.5 py-0.5 rounded">发码</span>
+                  <span class="text-xs text-gray-500 font-mono">{{ formatRecipeSummary(r.recipe) }}</span>
+                  <span v-if="r.start_time || r.end_time" class="text-[10px] bg-sky-50 text-sky-700 border border-sky-200 px-1 py-0.2 rounded" title="设置了活动时间">
+                    限时
                   </span>
                 </div>
-                <div v-else-if="r.action === 'event_subscribe'" class="text-xs text-blue-700 font-medium">
-                  <span>关注欢迎语</span>
+                <div v-else-if="r.action === 'event_subscribe'" class="text-xs text-blue-600">
+                  关注自动回复
                 </div>
-                <div v-else-if="r.action === 'event_fallback'" class="text-xs text-amber-700 font-medium">
-                  <span>默认未识别留言回复</span>
+                <div v-else-if="r.action === 'event_fallback'" class="text-xs text-amber-600">
+                  未匹配自动回复
                 </div>
                 <div v-else class="text-xs text-gray-500">
-                  <span>💬 回复普通文本</span>
+                  普通文本
                 </div>
               </td>
               <td><span class="text-xs font-mono font-medium">{{ r.priority }}</span></td>
               <td>
                 <button
                   @click="toggle(r)"
-                  class="text-xs px-2.5 py-1 rounded font-bold transition shadow-sm"
-                  :class="r.enabled ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200' : 'bg-gray-200 text-gray-500 hover:bg-gray-300'"
+                  class="text-xs px-2 py-0.5 rounded font-bold transition"
+                  :class="r.enabled ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200' : 'bg-gray-100 text-gray-400 hover:bg-gray-200'"
                 >
-                  {{ r.enabled ? '✓ 已启用' : '✕ 已停用' }}
+                  {{ r.enabled ? '启用' : '停用' }}
                 </button>
               </td>
-              <td class="text-right pr-2">
+              <td class="text-right pr-2 whitespace-nowrap">
                 <button @click="startEdit(r)" class="text-xs px-2.5 py-1 rounded bg-sky-50 text-sky-600 hover:bg-sky-100 font-bold">编辑</button>
-                <button @click="onDelete(r)" class="ml-1.5 text-xs px-2.5 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100 font-bold">删除</button>
+                <button @click="onDelete(r)" class="ml-1 text-xs px-2.5 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100 font-bold">删除</button>
               </td>
             </tr>
           </tbody>
@@ -113,18 +136,18 @@
       </div>
 
       <!-- 批量操作悬浮条 -->
-      <div v-if="selectedRuleIds.length" class="mt-4 p-3 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-between">
-        <span class="text-xs text-emerald-800 font-bold">
-          已选中 {{ selectedRuleIds.length }} 条规则
+      <div v-if="selectedRuleIds.length" class="mt-4 p-2.5 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-between text-xs">
+        <span class="text-emerald-800 font-bold">
+          已选 {{ selectedRuleIds.length }} 条规则
         </span>
-        <div class="flex gap-2">
-          <button @click="batchToggle(true)" class="px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold">
+        <div class="flex gap-1.5">
+          <button @click="batchToggle(true)" class="px-2.5 py-1 rounded bg-emerald-600 hover:bg-emerald-700 text-white font-bold">
             批量启用
           </button>
-          <button @click="batchToggle(false)" class="px-3 py-1 rounded bg-gray-600 hover:bg-gray-700 text-white text-xs font-bold">
+          <button @click="batchToggle(false)" class="px-2.5 py-1 rounded bg-gray-600 hover:bg-gray-700 text-white font-bold">
             批量停用
           </button>
-          <button @click="batchDelete" class="px-3 py-1 rounded bg-red-500 hover:bg-red-600 text-white text-xs font-bold">
+          <button @click="batchDelete" class="px-2.5 py-1 rounded bg-red-500 hover:bg-red-600 text-white font-bold">
             批量删除
           </button>
         </div>
@@ -140,14 +163,16 @@
       />
     </div>
 
+    <!-- 2. 全局自定义变量中心组件（切换至 variables Tab 时展示） -->
+    <div v-show="subTab === 'variables'">
+      <CustomVariables ref="variablesRef" />
+    </div>
+
     <!-- 批量导入规则弹窗组件 -->
     <RuleImportModal
       v-model:visible="showImportModal"
       @imported="load"
     />
-
-    <!-- 全局自定义变量中心组件 -->
-    <CustomVariables ref="variablesRef" />
   </div>
 </template>
 
@@ -160,11 +185,13 @@ import {
   deleteRule, listPools, listRules, saveRule,
 } from '../api.js'
 
+import HelpTip from '../components/common/HelpTip.vue'
 import RuleForm from '../components/rules/RuleForm.vue'
 import RuleImportModal from '../components/rules/RuleImportModal.vue'
 import CustomVariables from '../components/rules/CustomVariables.vue'
 
 const router = useRouter()
+const subTab = ref('rules')
 const rules = ref([])
 const pools = ref([])
 const editing = ref(false)

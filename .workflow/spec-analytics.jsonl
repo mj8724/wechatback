@@ -6,3 +6,4 @@
 {"type":"cli","id":"CLI-1790383773135-1","timestamp":"2026-09-26T00:49:33.135Z","command":"load","args":{"type":"spec","id":"spec:project:architecture-constraints-004"}}
 {"type":"cli","id":"CLI-1790384675819-1","timestamp":"2026-09-26T01:04:35.819Z","command":"load","args":{"type":"spec","id":"spec:project:test-conventions"}}
 {"type":"cli","id":"CLI-1790389233619-1","timestamp":"2026-09-26T02:20:33.619Z","command":"load","args":{"type":"spec","id":"spec:project:architecture-constraints"}}
+{"type":"cli","id":"CLI-1790492288769-1","timestamp":"2026-09-27T06:58:08.769Z","command":"load","args":{"type":"spec","id":"spec:project:ui-conventions"}}

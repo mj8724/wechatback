@@ -1,21 +1,14 @@
 <template>
-  <div class="bg-white rounded-xl shadow p-5 mt-4">
-    <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-4">
-      <div>
-        <h5 class="font-bold text-lg flex items-center gap-2">
-          🌐 全局变量中心
-          <span class="text-xs font-normal text-emerald-800 bg-emerald-100 px-2 py-0.5 rounded">
-            随处调用
-          </span>
-        </h5>
-        <p class="text-xs text-gray-500 mt-1">
-          在任意回复文案中输入 <code>{变量名}</code> 即可自动注入对应内容。修改此处变量值，公众号所有规则即时生效。
-        </p>
+  <div class="bg-white rounded-xl shadow p-5">
+    <div class="flex items-center justify-between mb-4">
+      <div class="flex items-center gap-1.5">
+        <h5 class="font-bold text-base text-gray-800">全局变量</h5>
+        <HelpTip text="在此定义的变量可在所有规则回复中通过 {key} 动态替换引用，修改后即刻生效。" />
       </div>
       <div>
         <button
           @click="openAddModal"
-          class="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-sm transition"
+          class="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-sm transition"
         >
           + 新增变量
         </button>
@@ -26,48 +19,51 @@
     <div class="overflow-x-auto">
       <table class="w-full text-sm">
         <thead>
-          <tr class="text-left text-gray-500 border-b">
-            <th class="py-2.5">调用占位符</th>
-            <th>变量说明</th>
-            <th>当前变量值</th>
-            <th class="text-right">操作</th>
+          <tr class="text-left text-gray-500 border-b text-xs">
+            <th class="py-2.5">
+              占位符
+              <HelpTip text="点击可直接复制到剪贴板，随后粘贴至回复文案中使用" />
+            </th>
+            <th>说明</th>
+            <th>变量值</th>
+            <th class="text-right pr-2">操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-if="!variables.length">
-            <td colspan="4" class="text-center text-gray-400 py-6">暂无自定义变量</td>
+            <td colspan="4" class="text-center text-gray-400 py-6 text-xs">暂无自定义变量</td>
           </tr>
           <tr v-for="v in variables" :key="v.id" class="border-t hover:bg-gray-50">
-            <td class="py-3 font-mono">
+            <td class="py-2.5 font-mono">
               <span
                 @click="copyPlaceholder(v.key)"
-                class="cursor-pointer inline-flex items-center gap-1 px-2.5 py-1 rounded bg-emerald-50 text-emerald-800 hover:bg-emerald-100 text-xs font-bold border border-emerald-200 transition"
-                title="点击快速复制占位符"
+                class="cursor-pointer inline-flex items-center gap-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 hover:bg-emerald-100 text-xs font-bold border border-emerald-200 transition"
+                title="点击复制"
               >
                 <code>{{ '{' + v.key + '}' }}</code>
                 <span class="text-[10px] text-emerald-600">📋</span>
               </span>
             </td>
-            <td class="text-gray-700 text-xs">
-              <span v-if="v.key === 'site' || v.key === 'group'" class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 mr-1.5">
-                核心系统
+            <td class="text-gray-600 text-xs">
+              <span v-if="v.key === 'site' || v.key === 'group'" class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-blue-100 text-blue-700 mr-1">
+                内置
               </span>
-              <span>{{ v.description || '无说明' }}</span>
+              <span>{{ v.description || '—' }}</span>
             </td>
             <td class="text-xs text-gray-800 font-mono max-w-xs md:max-w-md truncate" :title="v.value">
-              {{ v.value || '（空）' }}
+              {{ v.value || '—' }}
             </td>
-            <td class="text-right py-3 whitespace-nowrap">
+            <td class="text-right py-2.5 whitespace-nowrap pr-2">
               <button
                 @click="openEditModal(v)"
-                class="text-xs px-2.5 py-1 rounded bg-sky-50 text-sky-700 hover:bg-sky-100 font-bold"
+                class="text-xs px-2 py-1 rounded bg-sky-50 text-sky-700 hover:bg-sky-100 font-bold"
               >
                 编辑
               </button>
               <button
                 v-if="v.key !== 'site' && v.key !== 'group'"
                 @click="onDelete(v)"
-                class="ml-1.5 text-xs px-2.5 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100 font-bold"
+                class="ml-1 text-xs px-2 py-1 rounded bg-red-50 text-red-600 hover:bg-red-100 font-bold"
               >
                 删除
               </button>
@@ -80,7 +76,7 @@
     <!-- 复制成功浮动提示 -->
     <div
       v-if="copiedTip"
-      class="fixed bottom-6 right-6 z-50 px-4 py-2 bg-gray-900 text-white text-xs rounded-lg shadow-lg"
+      class="fixed bottom-6 right-6 z-50 px-3.5 py-1.5 bg-gray-900 text-white text-xs rounded-lg shadow-lg"
     >
       {{ copiedTip }}
     </div>
@@ -92,55 +88,56 @@
     >
       <div class="bg-white rounded-xl shadow-xl max-w-md w-full p-5">
         <div class="flex items-center justify-between mb-4 border-b pb-2">
-          <h6 class="font-bold text-base text-gray-900">
-            {{ form.id ? '✏️ 编辑全局变量' : '➕ 新增全局变量' }}
+          <h6 class="font-bold text-sm text-gray-900">
+            {{ form.id ? '编辑全局变量' : '新增全局变量' }}
           </h6>
           <button @click="showModal = false" class="text-gray-400 hover:text-gray-600 font-bold">✕</button>
         </div>
 
         <div class="space-y-3">
           <div>
-            <label class="block text-xs font-bold text-gray-700 mb-1">
-              变量标识 Key <span class="text-gray-400 font-normal">（模板中以 {key} 形式调用）</span>
-            </label>
+            <div class="flex items-center gap-1 mb-1">
+              <label class="text-xs font-bold text-gray-700">变量 Key</label>
+              <HelpTip text="仅限字母、数字和下划线，以 {key} 形式在模板调用" />
+            </div>
             <input
               v-model="form.key"
               :disabled="!!form.id"
-              placeholder="例如：notice 或 help_url（限英文/数字/下划线）"
-              class="w-full border rounded-lg px-3 py-2 text-sm outline-none font-mono focus:ring-2 focus:ring-emerald-500 disabled:bg-gray-100 disabled:text-gray-500"
+              placeholder="如 notice / help_url"
+              class="w-full border rounded-lg px-3 py-1.5 text-xs outline-none font-mono focus:ring-2 focus:ring-emerald-500 disabled:bg-gray-100 disabled:text-gray-500"
             />
           </div>
 
           <div>
-            <label class="block text-xs font-bold text-gray-700 mb-1">变量说明</label>
+            <label class="block text-xs font-bold text-gray-700 mb-1">说明</label>
             <input
               v-model="form.description"
-              placeholder="例如：兑换教程链接 / 紧急通知"
-              class="w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500"
+              placeholder="如 活动通知 / 帮助网址"
+              class="w-full border rounded-lg px-3 py-1.5 text-xs outline-none focus:ring-2 focus:ring-emerald-500"
             />
           </div>
 
           <div>
-            <label class="block text-xs font-bold text-gray-700 mb-1">变量内容 (Value)</label>
+            <label class="block text-xs font-bold text-gray-700 mb-1">内容</label>
             <textarea
               v-model="form.value"
               rows="3"
-              placeholder="填入替换的文本内容、网址或联系方式"
-              class="w-full border rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500"
+              placeholder="填入替换的文本内容或网址"
+              class="w-full border rounded-lg px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-emerald-500"
             ></textarea>
           </div>
         </div>
 
-        <div class="mt-5 flex justify-end gap-2 border-t pt-3">
+        <div class="mt-4 flex justify-end gap-2 border-t pt-3">
           <button
             @click="showModal = false"
-            class="px-4 py-2 rounded-lg border border-gray-300 text-gray-700 text-xs font-bold hover:bg-gray-50"
+            class="px-3.5 py-1.5 rounded-lg border border-gray-300 text-gray-700 text-xs font-bold hover:bg-gray-50"
           >
             取消
           </button>
           <button
             @click="onSave"
-            class="px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-sm"
+            class="px-4 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-sm"
           >
             保存
           </button>
@@ -153,6 +150,7 @@
 <script setup>
 import { onMounted, ref } from 'vue'
 import { createVariable, deleteVariable, getVariables, updateVariable } from '../../api.js'
+import HelpTip from '../common/HelpTip.vue'
 
 const emit = defineEmits(['variables-updated'])
 
@@ -241,10 +239,10 @@ async function onDelete(v) {
 function copyPlaceholder(key) {
   const text = `{${key}}`
   navigator.clipboard?.writeText(text).then(() => {
-    copiedTip.value = `已复制 ${text} 到剪贴板`
+    copiedTip.value = `已复制 ${text}`
     setTimeout(() => {
       copiedTip.value = ''
-    }, 2000)
+    }, 1500)
   })
 }
 
