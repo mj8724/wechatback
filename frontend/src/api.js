@@ -143,18 +143,6 @@ export async function deleteRule(id) {
   return res.json()
 }
 
-export async function getSettings() {
-  const res = await req('/api/settings')
-  if (!res.ok) throw { status: res.status, detail: '无权限访问' }
-  return res.json()
-}
-
-export async function saveSettings(settings) {
-  const res = await req('/api/settings', { method: 'PUT', body: JSON.stringify({ settings }) })
-  if (!res.ok) throw { status: res.status, detail: '保存失败' }
-  return res.json()
-}
-
 export async function resetUsers(openids) {
   const res = await req('/api/users/reset-batch', {
     method: 'POST',

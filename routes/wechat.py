@@ -8,8 +8,11 @@ from fastapi import APIRouter, Request, Response
 
 import config
 import core.config_store as cs
+import core.services.dispatch_service as dispatch_svc
+import core.services.message_service as message_svc
+import core.services.user_service as user_svc
 from core.security import check_openid_throttle, check_wechat_throttle, get_client_ip
-from core.wechat import build_reply_xml, decide_reply, save_message, update_user_event
+from core.wechat import build_reply_xml
 
 logger = logging.getLogger("wechat")
 
@@ -91,15 +94,15 @@ async def handle_wechat_msg(
     # 事件关注/取关状态跟踪
     if msg_type == "event":
         if event in ["subscribe", "scan"]:
-            update_user_event(from_user, "subscribe")
+            user_svc.record_user_event(from_user, "subscribe")
         elif event == "unsubscribe":
-            update_user_event(from_user, "unsubscribe")
+            user_svc.record_user_event(from_user, "unsubscribe")
 
-    reply_content = decide_reply(msg_type, event, content, from_user)
+    reply_content = dispatch_svc.dispatch_reply(msg_type, event, content, from_user)
 
     # 消息与回复闭环持久化记录
     msg_body = content or (f"[{event}]" if msg_type == "event" else content)
-    save_message(from_user, msg_type, msg_body, reply_content or "")
+    message_svc.save_message(from_user, msg_type, msg_body, reply_content or "")
 
     if reply_content is not None:
         return Response(content=build_reply_xml(from_user, to_user, reply_content), media_type="application/xml; charset=utf-8")

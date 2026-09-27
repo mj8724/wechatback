@@ -92,20 +92,7 @@ def list_all_rules() -> List[dict]:
         return [dict(r) for r in rows]
 
 
-def get_setting(key: str, default: str = "") -> str:
-    with db() as conn:
-        row = conn.execute("SELECT value FROM site_settings WHERE key = ?", (key,)).fetchone()
-        return row["value"] if row else default
-
-
-def set_setting(key: str, value: str):
-    with db() as conn:
-        conn.execute(
-            "INSERT INTO site_settings (key, value) VALUES (?, ?) "
-            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-            (key, value),
-        )
-        conn.commit()
+from core.config_store import get_setting, set_setting
 
 
 def get_pool_names_map() -> Dict[str, str]:
