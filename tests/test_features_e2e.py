@@ -19,6 +19,7 @@ os.environ["DB_PATH"] = temp_db.name
 os.environ["WECHAT_TOKEN"] = ""
 os.environ["ADMIN_PASSWORD"] = ""
 os.environ["WEBSITE_URL"] = ""
+os.environ["GROUP_WECHAT_ID"] = ""
 os.environ["ALLOWED_HOSTS"] = "*"
 
 from app import app

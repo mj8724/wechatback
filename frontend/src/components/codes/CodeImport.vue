@@ -2,8 +2,8 @@
   <div class="bg-white rounded-xl shadow p-5 mt-4">
     <div class="flex items-center justify-between mb-3">
       <div class="flex items-center gap-1.5">
-        <h5 class="font-bold text-base text-gray-800">批量导入</h5>
-        <HelpTip text="单次最多导入 2000 个激活码，自动剔除重复项。支持文本粘贴每行一个，或上传 Excel 文件。" />
+        <h5 class="font-bold text-base text-gray-800">批量导入激活码</h5>
+        <HelpTip text="单次最多导入 2000 个激活码，自动剔除重复项。支持纯文本每行一个，或按品类列头批量导入 Excel。" />
       </div>
       <div class="flex gap-1.5">
         <button
@@ -15,10 +15,11 @@
         </button>
         <button
           @click="importTab = 'excel'"
-          class="px-2.5 py-1 rounded text-xs font-medium transition"
+          class="px-2.5 py-1 rounded text-xs font-medium transition flex items-center gap-1"
           :class="importTab === 'excel' ? 'bg-emerald-600 text-white shadow-sm' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'"
         >
-          Excel 导入
+          <span>Excel 导入</span>
+          <HelpTip text="第一行为品类名称或 Key，支持单列或多列并排导入不同卡池" />
         </button>
       </div>
     </div>
@@ -46,13 +47,57 @@
 
     <!-- Excel 导入模式 -->
     <div v-else class="space-y-3">
-      <div class="border-2 border-dashed border-gray-200 rounded-lg p-4 text-center hover:border-emerald-500 transition">
+      <!-- 格式说明与案例卡片 -->
+      <div class="p-3 bg-gray-50 border border-gray-200 rounded-lg text-xs">
+        <div class="flex items-center justify-between mb-2">
+          <div class="flex items-center gap-1 text-gray-700 font-bold">
+            <span>📋 Excel 格式规范与案例</span>
+            <HelpTip text="表头名称支持品类 key（如 default/gpt）或品类全称，大小写不敏感；多列同时导入时将分别归入各自卡池。" />
+          </div>
+          <button
+            type="button"
+            @click="downloadSampleExcel"
+            class="text-xs font-bold text-emerald-700 hover:text-emerald-800 flex items-center gap-1 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded shadow-xs"
+          >
+            <span>📥 下载标准模板 (.xlsx)</span>
+          </button>
+        </div>
+
+        <!-- 案例表格展示 -->
+        <div class="overflow-x-auto">
+          <table class="w-full text-center border-collapse bg-white font-mono text-[11px] rounded shadow-2xs">
+            <thead>
+              <tr class="bg-emerald-50 text-emerald-800 border">
+                <th class="py-1 px-3 border font-bold">default (默认池)</th>
+                <th class="py-1 px-3 border font-bold">gpt (AI算力)</th>
+                <th class="py-1 px-3 border font-bold">vip (月卡会员)</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr class="border text-gray-500">
+                <td class="py-1 px-3 border">CODE-DEF-001</td>
+                <td class="py-1 px-3 border">CODE-GPT-001</td>
+                <td class="py-1 px-3 border">CODE-VIP-001</td>
+              </tr>
+              <tr class="border text-gray-500">
+                <td class="py-1 px-3 border">CODE-DEF-002</td>
+                <td class="py-1 px-3 border">CODE-GPT-002</td>
+                <td class="py-1 px-3 border">CODE-VIP-002</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 文件拖拽上传框 -->
+      <div class="border-2 border-dashed border-gray-200 rounded-lg p-4 text-center hover:border-emerald-500 transition bg-white">
         <input type="file" accept=".xlsx, .xls" @change="handleExcelUpload" class="hidden" id="excelCodesInput" />
         <label for="excelCodesInput" class="cursor-pointer block">
           <p class="text-xs font-medium text-gray-700">点击或拖拽包含激活码的 Excel 文件 (.xlsx / .xls)</p>
-          <p class="text-[11px] text-gray-400 mt-0.5">支持单列或多列，列头对应品类名称或 key（如 gpt、default）</p>
+          <p class="text-[11px] text-gray-400 mt-0.5">支持单列或多列并排，自动剔除空值与重复项</p>
         </label>
       </div>
+
       <div v-if="excelParsedCodes" class="p-3 bg-gray-50 rounded-lg text-xs space-y-1">
         <div class="font-bold text-gray-700">Excel 解析预览：</div>
         <div v-for="(codes, key) in excelParsedCodes" :key="key" class="text-gray-600">
@@ -197,5 +242,24 @@ async function onImportExcel() {
   } catch (e) {
     alert('导入 Excel 失败：' + (e.detail || '未知错误'))
   }
+}
+
+function downloadSampleExcel() {
+  // 根据当前系统已有卡池动态生成，或提供标准样例
+  const cols = props.poolList.length
+    ? props.poolList.map((p) => p.key)
+    : ['default', 'gpt', 'vip']
+
+  const sampleRows = [
+    cols.map((k) => `SAMPLE-${k.toUpperCase()}-001`),
+    cols.map((k) => `SAMPLE-${k.toUpperCase()}-002`),
+    cols.map((k) => `SAMPLE-${k.toUpperCase()}-003`),
+  ]
+
+  const sheetData = [cols, ...sampleRows]
+  const ws = XLSX.utils.aoa_to_sheet(sheetData)
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws, '激活码导入模板')
+  XLSX.writeFile(wb, 'codes_import_sample.xlsx')
 }
 </script>
