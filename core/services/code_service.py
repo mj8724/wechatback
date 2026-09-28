@@ -357,37 +357,115 @@ def parse_recipe(conn, recipe_raw: str) -> List[Dict[str, Any]]:
 
 
 def _claim_recipe_codes(conn, openid: str, rule_id: int = 0, recipe_raw: str = ""):
-    """组合发码底层事务。
+    """按品类发码底层事务：
+    1. 按品类防重：若老的品类已经领取过，则不可重复领取；
+    2. 新品类允许领取：若配方中包含用户未曾领取过的新品类，则为用户发放新品类卡密；
+    3. 全品类已领：若配方中所有品类均已领取过，则直接返回已领卡密并走 repeat 提醒分支；
+    4. 除管理员重置外不可重复领取。
     返回 (data_dict, kind)，kind ∈ new/existing/empty/retry/error。
     """
     cursor = conn.cursor()
 
-    # 1. 幂等性：同 openid 在此规则下是否已领过
+    # 1. 查询该用户在各个卡池的历史领码记录
     cursor.execute("""
         SELECT ucc.code, ucc.pool_id, p.key as pool_key
         FROM user_code_claims ucc
         LEFT JOIN code_pools p ON ucc.pool_id = p.id
-        WHERE ucc.openid = ? AND ucc.rule_id = ?
+        WHERE ucc.openid = ?
         ORDER BY ucc.id ASC
-    """, (openid, rule_id))
-    claims = cursor.fetchall()
-    if claims:
-        codes_map = {}
-        for r in claims:
-            k = r["pool_key"] or "default"
-            codes_map.setdefault(k, []).append(r["code"])
-        return {"codes_map": codes_map, "first_code": claims[0]["code"]}, "existing"
+    """, (openid,))
+    claims = [dict(r) for r in cursor.fetchall()]
+
+    # 兼容老数据（users 表中存在但 claims 表未镜像时视为默认池已领）
+    cursor.execute("SELECT code FROM users WHERE openid = ?", (openid,))
+    u_row = cursor.fetchone()
+    if u_row and u_row["code"]:
+        old_code = u_row["code"]
+        if not any(c["pool_id"] == 1 or c["code"] == old_code for c in claims):
+            claims.insert(0, {
+                "code": old_code,
+                "pool_id": 1,
+                "pool_key": "default",
+            })
+            try:
+                cursor.execute(
+                    "INSERT OR IGNORE INTO user_code_claims (openid, rule_id, pool_id, code) VALUES (?, 0, 1, ?)",
+                    (openid, old_code),
+                )
+            except Exception:
+                pass
+
+    existing_by_pool = {}
+    for r in claims:
+        pid = r["pool_id"]
+        existing_by_pool.setdefault(pid, []).append(r["code"])
 
     # 2. 解析配方
     recipe = parse_recipe(conn, recipe_raw)
+
+    # 3. 按品类预检：区分“已领过的老品类”和“未领过的新品类”
+    needed_items = []
+    reused_items = []
+    for item in recipe:
+        pid = item["pool_id"]
+        if pid in existing_by_pool:
+            reused_items.append(item)
+        else:
+            needed_items.append(item)
+
+    # 若配方中所有品类均已领过，直接返回已领卡密（走 repeat 分支，不扣新库存）
+    if not needed_items:
+        codes_map = {}
+        for item in recipe:
+            pid = item["pool_id"]
+            pkey = item["key"]
+            codes_map[pkey] = existing_by_pool.get(pid, [])
+        primary_pid = recipe[0]["pool_id"] if recipe else 1
+        first_code = existing_by_pool.get(primary_pid, [""])[0] if existing_by_pool.get(primary_pid) else (claims[0]["code"] if claims else "")
+        return {"codes_map": codes_map, "first_code": first_code}, "existing"
+
     now_str = time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime())
 
     try:
         cursor.execute("BEGIN IMMEDIATE")
 
-        # 检查各品类库存（All-or-Nothing 事务原子性）
-        allocated = []
+        # 事务内重新加排他锁后查重（防止并发竞态）
+        cursor.execute("""
+            SELECT ucc.code, ucc.pool_id, p.key as pool_key
+            FROM user_code_claims ucc
+            LEFT JOIN code_pools p ON ucc.pool_id = p.id
+            WHERE ucc.openid = ?
+            ORDER BY ucc.id ASC
+        """, (openid,))
+        tx_claims = [dict(r) for r in cursor.fetchall()]
+        tx_existing_by_pool = {}
+        for r in tx_claims:
+            pid = r["pool_id"]
+            tx_existing_by_pool.setdefault(pid, []).append(r["code"])
+
+        tx_needed_items = []
+        tx_reused_items = []
         for item in recipe:
+            pid = item["pool_id"]
+            if pid in tx_existing_by_pool:
+                tx_reused_items.append(item)
+            else:
+                tx_needed_items.append(item)
+
+        if not tx_needed_items:
+            conn.rollback()
+            codes_map = {}
+            for item in recipe:
+                pid = item["pool_id"]
+                pkey = item["key"]
+                codes_map[pkey] = tx_existing_by_pool.get(pid, [])
+            primary_pid = recipe[0]["pool_id"] if recipe else 1
+            first_code = tx_existing_by_pool.get(primary_pid, [""])[0] if tx_existing_by_pool.get(primary_pid) else (tx_claims[0]["code"] if tx_claims else "")
+            return {"codes_map": codes_map, "first_code": first_code}, "existing"
+
+        # 检查各新品类库存（All-or-Nothing 事务原子性）
+        allocated = []
+        for item in tx_needed_items:
             pid = item["pool_id"]
             cnt = item["count"]
             pkey = item["key"]
@@ -427,9 +505,15 @@ def _claim_recipe_codes(conn, openid: str, rule_id: int = 0, recipe_raw: str = "
 
         conn.commit()
 
+        # 最终组合：已领品类（复用）+ 新品类（新发）
         codes_map = {}
+        for item in tx_reused_items:
+            pid = item["pool_id"]
+            pkey = item["key"]
+            codes_map[pkey] = tx_existing_by_pool.get(pid, [])
         for alloc in allocated:
             codes_map.setdefault(alloc["key"], []).append(alloc["code"])
+
         first_code = allocated[0]["code"] if allocated else ""
         return {"codes_map": codes_map, "first_code": first_code}, "new"
 
@@ -439,9 +523,9 @@ def _claim_recipe_codes(conn, openid: str, rule_id: int = 0, recipe_raw: str = "
             SELECT ucc.code, ucc.pool_id, p.key as pool_key
             FROM user_code_claims ucc
             LEFT JOIN code_pools p ON ucc.pool_id = p.id
-            WHERE ucc.openid = ? AND ucc.rule_id = ?
+            WHERE ucc.openid = ?
             ORDER BY ucc.id ASC
-        """, (openid, rule_id))
+        """, (openid,))
         claims = cursor.fetchall()
         if claims:
             codes_map = {}

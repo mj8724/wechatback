@@ -582,10 +582,104 @@ res_rand_disabled = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_r
 assert res_rand_disabled.text.strip() == "success"
 print("  -> System event rules (subscribe & fallback) and independent toggles verified OK")
 
+# ==========================================
+# E2E-16: 按品类发码防重与新品类领取验证
+# ==========================================
+print("\n[E2E-16] Testing Category/Pool-based Claiming (Old pool blocked, New pool allowed)...")
+# 1. 创建两个不同的规则，但都发放默认品类 (pool_id=1)
+r_old_1 = requests.post(f"{BASE_URL}/api/rules", json={
+    "keyword": "老词一",
+    "mode": "contains",
+    "action": "code",
+    "recipe": "default:1",
+    "status_replies": {
+        "new": "【规则一发码】：{code}",
+        "repeat": "【规则一已领】：{code}"
+    }
+}, headers=headers).json()
+r_old_2 = requests.post(f"{BASE_URL}/api/rules", json={
+    "keyword": "老词二",
+    "mode": "contains",
+    "action": "code",
+    "recipe": "default:1",
+    "status_replies": {
+        "new": "【规则二发码】：{code}",
+        "repeat": "【规则二已领】：{code}"
+    }
+}, headers=headers).json()
+
+# 用户 fan_pool_tester 首次发送“老词一” -> 成功领取 default 码
+xml_p1 = """<xml><ToUserName><![CDATA[gh_test]]></ToUserName><FromUserName><![CDATA[fan_pool_tester]]></FromUserName><CreateTime>12345710</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[老词一]]></Content></xml>"""
+res_p1 = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_p1.encode("utf-8"))
+p1_text = ET.fromstring(res_p1.content.decode("utf-8")).findtext("Content") or ""
+assert "【规则一发码】" in p1_text
+claimed_default_code = p1_text.replace("【规则一发码】：", "").strip()
+
+# 用户再次发送“老词一” -> 命中 repeat
+res_p1_rep = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_p1.encode("utf-8"))
+assert "【规则一已领】" in (ET.fromstring(res_p1_rep.content.decode("utf-8")).findtext("Content") or "")
+
+# 关键验证：用户换一个规则发送“老词二”（不同 rule_id），但发放的仍是已领过的 default 品类 -> 必须拦截！
+xml_p2 = """<xml><ToUserName><![CDATA[gh_test]]></ToUserName><FromUserName><![CDATA[fan_pool_tester]]></FromUserName><CreateTime>12345711</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[老词二]]></Content></xml>"""
+res_p2 = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_p2.encode("utf-8"))
+p2_text = ET.fromstring(res_p2.content.decode("utf-8")).findtext("Content") or ""
+assert "【规则二已领】" in p2_text, f"Expected repeat branch, got: {p2_text}"
+assert claimed_default_code in p2_text
+
+# 2. 模拟老版本迁移过来的历史用户（user_code_claims 中 rule_id=0 或仅在 users 表有记录）
+with d.db() as conn:
+    conn.execute("INSERT OR REPLACE INTO users (openid, code, last_event) VALUES ('fan_legacy_user', 'LEGACY-CODE-999', 'subscribe')")
+    conn.execute("INSERT OR REPLACE INTO user_code_claims (openid, rule_id, pool_id, code) VALUES ('fan_legacy_user', 0, 1, 'LEGACY-CODE-999')")
+    conn.commit()
+
+xml_leg = """<xml><ToUserName><![CDATA[gh_test]]></ToUserName><FromUserName><![CDATA[fan_legacy_user]]></FromUserName><CreateTime>12345712</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[老词一]]></Content></xml>"""
+res_leg = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_leg.encode("utf-8"))
+leg_text = ET.fromstring(res_leg.content.decode("utf-8")).findtext("Content") or ""
+assert "【规则一已领】" in leg_text
+assert "LEGACY-CODE-999" in leg_text
+
+# 3. 创建新品类 VIP 池，并导入激活码
+p_vip = requests.post(f"{BASE_URL}/api/pools", json={"name": "VIP会员卡", "key": "vip"}, headers=headers).json()
+vip_pool_id = p_vip["id"]
+requests.post(f"{BASE_URL}/api/import", json={"pool_id": vip_pool_id, "codes": ["VIP-8888-A", "VIP-8888-B"]}, headers=headers)
+
+# 创建新品类发码规则
+requests.post(f"{BASE_URL}/api/rules", json={
+    "keyword": "领VIP",
+    "mode": "contains",
+    "action": "code",
+    "recipe": "vip:1",
+    "status_replies": {
+        "new": "【VIP首发成功】：{code}",
+        "repeat": "【VIP已领提醒】：{code}"
+    }
+}, headers=headers)
+
+# 关键验证：已领过 default 的 fan_pool_tester，领取新品类 VIP -> 允许领取！
+xml_vip = """<xml><ToUserName><![CDATA[gh_test]]></ToUserName><FromUserName><![CDATA[fan_pool_tester]]></FromUserName><CreateTime>12345713</CreateTime><MsgType><![CDATA[text]]></MsgType><Content><![CDATA[我要领VIP]]></Content></xml>"""
+res_vip = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_vip.encode("utf-8"))
+vip_text = ET.fromstring(res_vip.content.decode("utf-8")).findtext("Content") or ""
+assert "【VIP首发成功】：VIP-8888-A" in vip_text
+
+# 二次领取新品类 VIP -> 拦截为已领
+res_vip_rep = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_vip.encode("utf-8"))
+assert "【VIP已领提醒】：VIP-8888-A" in (ET.fromstring(res_vip_rep.content.decode("utf-8")).findtext("Content") or "")
+
+# 4. 验证单码重置：管理员单项重置 fan_pool_tester 的 default 码
+requests.post(f"{BASE_URL}/api/codes/reset", json={"code": claimed_default_code}, headers=headers)
+# 重置后，默认池可重新领取
+res_p1_after_reset = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_p1.encode("utf-8"))
+assert "【规则一发码】" in (ET.fromstring(res_p1_after_reset.content.decode("utf-8")).findtext("Content") or "")
+# 但未被重置的 VIP 品类依然处于已领状态！
+res_vip_still_claimed = requests.post(f"{BASE_URL}/wechat", params=new_p, data=xml_vip.encode("utf-8"))
+assert "【VIP已领提醒】" in (ET.fromstring(res_vip_still_claimed.content.decode("utf-8")).findtext("Content") or "")
+
+print("  -> Category/Pool-based claim idempotency, new pool unlock, and fine-grained reset verified OK")
+
 # 清理测试临时库
 try:
     os.remove(temp_db.name)
 except Exception:
     pass
 
-print("\n🎉 ALL E2E SUITE TESTS (E2E-01 -> E2E-15) PASSED SUCCESSFULLY!")
+print("\n🎉 ALL E2E SUITE TESTS (E2E-01 -> E2E-16) PASSED SUCCESSFULLY!")

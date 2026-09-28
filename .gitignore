@@ -24,4 +24,5 @@ frontend/node_modules/
 .workflow/search-daemon.json
 .workflow/wiki-index*
 .workflow/kg/
+.workflow/embedding*
 

@@ -202,7 +202,7 @@ def get_rule_status_reply(rule: dict, status: str) -> str:
     if status == "new":
         return content or "🎉 您的专属激活码为：\n\n【{code}】\n\n👉 兑换地址：{site}\n\n每个用户限领一次，请前往上方兑换地址完成充值兑换！"
     elif status == "repeat":
-        return content or "您之前已成功领取过专属激活码：\n\n【{code}】\n\n👉 兑换地址：{site}\n每个用户限领一次，已领取的激活码可随时在上方平台完成兑换！"
+        return content or get_setting("repeat_reply") or "您之前已成功领取过专属激活码：\n\n【{code}】\n\n👉 兑换地址：{site}\n每个用户限领一次，已领取的激活码可随时在上方平台完成兑换！"
     elif status == "empty":
         return get_setting("empty_reply") or "抱歉，当前激活码已被领完，请稍后再试或联系管理员！\n平台地址：{site}"
     elif status == "not_started":

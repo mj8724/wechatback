@@ -62,6 +62,7 @@ def init_db():
         )
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_openid ON user_code_claims(openid)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_openid_pool ON user_code_claims(openid, pool_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_rule ON user_code_claims(openid, rule_id)")
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_claim_unique_code ON user_code_claims(code)")
         cursor.execute("""
@@ -200,6 +201,7 @@ def _migrate(cursor):
         )
         """)
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_openid ON user_code_claims(openid)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_openid_pool ON user_code_claims(openid, pool_id)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_rule ON user_code_claims(openid, rule_id)")
         cursor.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_claim_unique_code ON user_code_claims(code)")
         cursor.execute("""

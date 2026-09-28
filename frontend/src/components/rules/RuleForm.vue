@@ -507,6 +507,7 @@ async function onSave() {
   }
 
   const payload = {
+    id: form.value.id || null,
     keyword: isEventAction.value ? `__${form.value.action}__` : form.value.keyword.trim(),
     mode: isEventAction.value ? 'exact' : form.value.mode,
     action: form.value.action,

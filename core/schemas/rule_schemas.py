@@ -3,6 +3,7 @@ from pydantic import BaseModel
 
 
 class RuleRequest(BaseModel):
+    id: Optional[int] = None
     keyword: str = ""
     mode: str = "contains"
     action: str = "none"

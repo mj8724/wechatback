@@ -126,9 +126,10 @@ export async function listRules() {
   return res.json()
 }
 
-export async function saveRule(rule) {
-  const hasId = !!rule.id
-  const res = await req(hasId ? `/api/rules/${rule.id}` : '/api/rules', {
+export async function saveRule(rule, id = null) {
+  const ruleId = id || rule.id
+  const hasId = !!ruleId
+  const res = await req(hasId ? `/api/rules/${ruleId}` : '/api/rules', {
     method: hasId ? 'PUT' : 'POST',
     body: JSON.stringify(rule),
   })
