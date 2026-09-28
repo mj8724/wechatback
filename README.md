@@ -14,7 +14,7 @@
   <img src="https://img.shields.io/badge/Vite-6.0+-646CFF?style=flat&logo=vite&logoColor=white" alt="Vite">
   <img src="https://img.shields.io/badge/TailwindCSS-3.4+-38B2AC?style=flat&logo=tailwind-css&logoColor=white" alt="TailwindCSS">
   <img src="https://img.shields.io/badge/Docker-Ready-2496ED?style=flat&logo=docker&logoColor=white" alt="Docker">
-  <img src="https://img.shields.io/badge/License-MIT-yellow.svg?style=flat" alt="License">
+  <a href="https://polyformproject.org/licenses/noncommercial/1.0.0/"><img src="https://img.shields.io/badge/License-PolyForm--Noncommercial--1.0.0-blue.svg?style=flat" alt="License: PolyForm Noncommercial 1.0.0"></a>
 </p>
 
 ---
@@ -276,6 +276,8 @@ wechatback/
 
 ---
 
-## 📄 开源许可证
+## 📄 许可证与商业使用
 
-本项目基于 [MIT License](LICENSE) 开源。欢迎 Star、Fork 或提交 Pull Request！
+本项目采用 [PolyForm Noncommercial License 1.0.0](LICENSE)，**不再采用 MIT 协议**。该许可仅授权非商业用途；**禁止任何商业用途，包括出售、收费分发，或在商业运营中使用本项目，即使服务免费提供也不代表允许商用**。个人学习、实验及符合许可证定义的非商业用途除外；具体以许可证原文为准。
+
+如需将本项目用于商业用途，请在使用前联系版权方并取得单独的书面商业授权。
